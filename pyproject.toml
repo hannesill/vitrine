@@ -1,0 +1,57 @@
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[project]
+name = "vitrine"
+version = "0.1.0"
+description = "Research journal and live display for AI agents"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "pandas>=2.0.0",
+    "pyarrow>=10.0.0",
+    "duckdb>=1.4.1",
+    "starlette>=0.27.0",
+    "uvicorn>=0.23.0",
+]
+
+[project.scripts]
+vitrine = "vitrine.cli:app"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.4.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-mock>=3.10.0",
+    "httpx>=0.24.0",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+src = ["src"]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "W",
+    "F",
+    "I",
+    "UP",
+    "RUF",
+]
+
+ignore = [
+    "E501",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["vitrine"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
