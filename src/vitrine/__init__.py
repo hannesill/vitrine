@@ -25,6 +25,7 @@ from typing import Any
 
 from vitrine._types import (
     CardDescriptor,
+    CardType,
     DisplayEvent,
     DisplayHandle,
     DisplayResponse,
@@ -33,6 +34,7 @@ from vitrine._types import (
 )
 
 __all__ = [
+    "CardType",
     "DisplayEvent",
     "DisplayHandle",
     "DisplayResponse",
