@@ -211,7 +211,7 @@ function createAgentCard(studyLabel, task) {
     body: JSON.stringify({ task: task })
   })
     .then(function(r) {
-      if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Server returned ' + r.status); });
+      if (!r.ok) return r.text().then(function(t) { try { var d = JSON.parse(t); throw new Error(d.error || 'Server returned ' + r.status); } catch(e) { if (e instanceof SyntaxError) throw new Error('Server returned ' + r.status); throw e; } });
       return r.json();
     })
     .then(function() {

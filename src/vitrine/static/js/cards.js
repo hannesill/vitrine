@@ -1331,7 +1331,7 @@ function renderAgentConfigForm(container, cardData) {
       body: JSON.stringify(config)
     })
       .then(function(r) {
-        if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Failed'); });
+        if (!r.ok) return r.text().then(function(t) { try { var d = JSON.parse(t); throw new Error(d.error || 'Failed'); } catch(e) { if (e instanceof SyntaxError) throw new Error('Server returned ' + r.status); throw e; } });
         return r.json();
       })
       .then(function() {
@@ -1476,7 +1476,7 @@ function renderAgentRunning(container, cardData) {
       method: 'DELETE'
     })
       .then(function(r) {
-        if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Failed'); });
+        if (!r.ok) return r.text().then(function(t) { try { var d = JSON.parse(t); throw new Error(d.error || 'Failed'); } catch(e) { if (e instanceof SyntaxError) throw new Error('Server returned ' + r.status); throw e; } });
         showToast('Agent cancelled');
       })
       .catch(function(err) {
