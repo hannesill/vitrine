@@ -188,12 +188,14 @@ def _start_background(port: int = 7741, no_open: bool = False) -> None:
     if no_open:
         cmd.append("--no-open")
 
+    from vitrine._utils import detached_popen_kwargs
+
     _info(f"Starting vitrine server on port {port}...")
     subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        **detached_popen_kwargs(),
     )
 
     # Wait for server to come up

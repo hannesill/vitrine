@@ -455,13 +455,15 @@ async def run_agent(
     # Strip CLAUDECODE env var so the child doesn't think it's nested
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
+    from vitrine._utils import detached_popen_kwargs
+
     # Spawn headless agent
     proc = subprocess.Popen(
         cli_args,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        start_new_session=True,
+        **detached_popen_kwargs(),
         env=env,
     )
 

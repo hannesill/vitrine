@@ -1673,7 +1673,15 @@ def _kill_orphaned_servers(host: str, port_lo: int, port_hi: int) -> None:
 
     Strategy: probe each port for a vitrine health endpoint.  If found,
     use ``lsof`` to resolve the PID and send SIGTERM.
+
+    On Windows this is a no-op — orphaned servers are handled by PID file
+    checks and health checks (already implemented).
     """
+    import sys
+
+    if sys.platform == "win32":
+        return
+
     import subprocess
     import urllib.request
 
@@ -1732,8 +1740,9 @@ def _run_standalone(port: int = _DEFAULT_PORT, no_open: bool = False) -> None:
     PID file for an existing healthy server, then starts.
     """
     import atexit
-    import fcntl
     import sys
+
+    from vitrine._utils import lock_file, unlock_file
 
     display_dir = _get_vitrine_dir()
     display_dir.mkdir(parents=True, exist_ok=True)
@@ -1744,7 +1753,7 @@ def _run_standalone(port: int = _DEFAULT_PORT, no_open: bool = False) -> None:
     # Acquire cross-process file lock
     lock_fd = open(lock_path, "w")
     try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_file(lock_fd, exclusive=True, blocking=False)
     except OSError:
         # Another process holds the lock — a server is starting
         logger.debug("Another server process holds the lock, exiting")
@@ -1797,7 +1806,12 @@ def _run_standalone(port: int = _DEFAULT_PORT, no_open: bool = False) -> None:
             logger.debug(f"Received signal {signum}, shutting down...")
             stop_event.set()
 
-        signal.signal(signal.SIGTERM, _shutdown)
+        # On Windows, only SIGINT and SIGBREAK are supported.
+        # Use SIGBREAK as the Windows equivalent of SIGTERM.
+        if sys.platform == "win32":
+            signal.signal(signal.SIGBREAK, _shutdown)  # type: ignore[attr-defined]
+        else:
+            signal.signal(signal.SIGTERM, _shutdown)
         signal.signal(signal.SIGINT, _shutdown)
         atexit.register(server.stop)
 
@@ -1806,7 +1820,7 @@ def _run_standalone(port: int = _DEFAULT_PORT, no_open: bool = False) -> None:
 
     finally:
         # Release the lock after PID file is written (or on error)
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        unlock_file(lock_fd)
         lock_fd.close()
 
     # Block until signal (outside lock — other processes can now discover us)

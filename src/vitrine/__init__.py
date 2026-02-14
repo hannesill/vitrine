@@ -278,7 +278,7 @@ def _ensure_started(
     5. Release lock
     6. Fallback in-thread server if polling fails
     """
-    import fcntl
+    from vitrine._utils import lock_file, unlock_file
 
     global _server, _store, _study_manager, _session_id, _remote_url, _auth_token
 
@@ -304,7 +304,7 @@ def _ensure_started(
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with open(lock_path, "w") as lock_fd:
             try:
-                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                lock_file(lock_fd)
 
                 # Try to discover an existing persistent server (PID file).
                 # The PID file is the sole authority — no port scanning.
@@ -321,7 +321,7 @@ def _ensure_started(
                 _start_process(port=port, open_browser=open_browser)
 
             finally:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                unlock_file(lock_fd)
 
         # Poll for the PID file to appear (server writes it after binding)
         deadline = time.monotonic() + 5.0
@@ -382,11 +382,13 @@ def _start_process(port: int = 7741, open_browser: bool = True) -> None:
     if not open_browser:
         cmd.append("--no-open")
 
+    from vitrine._utils import detached_popen_kwargs
+
     subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        **detached_popen_kwargs(),
     )
 
 

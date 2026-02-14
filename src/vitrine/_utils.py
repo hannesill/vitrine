@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -19,11 +21,79 @@ from typing import Any
 
 def is_pid_alive(pid: int) -> bool:
     """Check if a process with the given PID is alive."""
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if handle:
+            kernel32.CloseHandle(handle)
+            return True
         return False
+    else:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+
+# ---------------------------------------------------------------------------
+# Cross-platform file locking
+# ---------------------------------------------------------------------------
+
+
+def lock_file(fd: Any, exclusive: bool = True, blocking: bool = True) -> None:
+    """Acquire a file lock. Works on Unix (fcntl) and Windows (msvcrt)."""
+    if sys.platform == "win32":
+        import msvcrt
+
+        mode = msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK
+        # msvcrt.locking operates on the file descriptor's current position
+        # Lock 1 byte at position 0
+        fd.seek(0)
+        msvcrt.locking(fd.fileno(), mode, 1)
+    else:
+        import fcntl
+
+        if exclusive:
+            op = fcntl.LOCK_EX
+        else:
+            op = fcntl.LOCK_SH
+        if not blocking:
+            op |= fcntl.LOCK_NB
+        fcntl.flock(fd, op)
+
+
+def unlock_file(fd: Any) -> None:
+    """Release a file lock."""
+    if sys.platform == "win32":
+        import msvcrt
+
+        fd.seek(0)
+        try:
+            msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+    else:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+# ---------------------------------------------------------------------------
+# Cross-platform subprocess detach kwargs
+# ---------------------------------------------------------------------------
+
+
+def detached_popen_kwargs() -> dict[str, Any]:
+    """Return Popen kwargs for detaching a subprocess from the parent."""
+    if sys.platform == "win32":
+        CREATE_NEW_PROCESS_GROUP = 0x00000200
+        DETACHED_PROCESS = 0x00000008
+        return {"creationflags": CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS}
+    return {"start_new_session": True}
 
 
 # ---------------------------------------------------------------------------
