@@ -48,6 +48,14 @@ _MODEL_CONTEXT_WINDOWS = {
 # task name -> (skill directory, card title, allowed tools)
 _TASK_CONFIG: dict[str, tuple[str, str, str]] = {}
 
+_BUILTIN_SKILLS_DIR: Path = Path(__file__).parent / "skills"
+
+_DEFAULT_TASK_CONFIG: dict[str, tuple[str, str, str]] = {
+    "reproduce": ("reproduce-study", "Reproducibility Audit", "Bash,Read,Glob,Grep"),
+    "report": ("export-report", "Study Report", "Read,Glob,Grep"),
+    "paper": ("draft-paper", "Paper Draft", "Bash,Read,Glob,Grep,Write"),
+}
+
 
 def configure(
     skills_dir: Path | str | None = None,
@@ -71,17 +79,12 @@ def configure(
 
 
 def _require_config() -> None:
-    """Raise if dispatch has not been configured."""
+    """Ensure dispatch is configured, loading built-in defaults if needed."""
+    global _SKILLS_DIR, _TASK_CONFIG
     if _SKILLS_DIR is None:
-        raise RuntimeError(
-            "vitrine.dispatch not configured: call "
-            "vitrine.dispatch.configure(skills_dir=..., task_config=...) first"
-        )
+        _SKILLS_DIR = _BUILTIN_SKILLS_DIR
     if not _TASK_CONFIG:
-        raise RuntimeError(
-            "vitrine.dispatch not configured: _TASK_CONFIG is empty. "
-            "Call vitrine.dispatch.configure(task_config=...) first"
-        )
+        _TASK_CONFIG = dict(_DEFAULT_TASK_CONFIG)
 
 
 @dataclass

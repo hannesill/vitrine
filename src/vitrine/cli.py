@@ -1,10 +1,13 @@
-"""Standalone vitrine CLI — independent of the m4 command.
+"""Standalone vitrine CLI.
 
 Usage:
     vitrine restart [--port PORT] [--no-open]
     vitrine start   [--port PORT] [--no-open]
     vitrine stop
     vitrine status
+    vitrine studies
+    vitrine clean OLDER_THAN
+    vitrine export PATH [--format FORMAT] [--study STUDY]
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ from rich.console import Console
 
 app = typer.Typer(
     name="vitrine",
-    help="Manage the vitrine display server.",
+    help="Manage the vitrine display server and studies.",
     no_args_is_help=True,
 )
 console = Console()
@@ -111,6 +114,64 @@ def status() -> None:
         console.print(f"  [bold]Started:[/bold]    {info.get('started_at')}")
     else:
         _info("No running server found.")
+
+
+@app.command()
+def studies() -> None:
+    """List all vitrine studies."""
+    from vitrine import list_studies as do_list_studies
+
+    result = do_list_studies()
+    if not result:
+        _info("No studies found.")
+        return
+
+    console.print()
+    console.print(f"[bold]Studies ({len(result)}):[/bold]")
+    console.print()
+    for s in result:
+        label = s.get("label", "?")
+        start = s.get("start_time", "?")
+        cards = s.get("card_count", 0)
+        console.print(
+            f"  [green]{label:<30s}[/green] {cards:>3d} cards   {start}"
+        )
+
+
+@app.command()
+def clean(
+    older_than: str = typer.Argument(
+        help="Remove studies older than duration (e.g., '7d', '24h', '0d' for all)."
+    ),
+) -> None:
+    """Remove studies older than a given duration."""
+    from vitrine import clean_studies as do_clean
+
+    removed = do_clean(older_than=older_than)
+    if removed > 0:
+        _success(f"Removed {removed} study/studies.")
+    else:
+        _info("No studies matched the age filter.")
+
+
+@app.command()
+def export(
+    path: str = typer.Argument(help="Output file path."),
+    format: str = typer.Option("html", "--format", "-f", help="Export format: 'html' or 'json'."),
+    study: str | None = typer.Option(None, "--study", help="Study label (default: all studies)."),
+) -> None:
+    """Export study/studies to file."""
+    from vitrine import export as do_export
+
+    try:
+        result = do_export(path, format=format, study=study)
+        _success(f"Exported to {result}")
+    except ValueError as e:
+        _error(str(e))
+        raise typer.Exit(1)
+    except Exception as e:
+        _error(f"Export failed: {e}")
+        raise typer.Exit(1)
 
 
 def _start_background(port: int = 7741, no_open: bool = False) -> None:

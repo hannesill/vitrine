@@ -44,6 +44,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from vitrine._types import CardDescriptor
 from vitrine.artifacts import ArtifactStore, _serialize_card
+import vitrine.dispatch as _dispatch_mod
 from vitrine.dispatch import (
     DispatchInfo,
     _dispatch_watchdog,
@@ -986,10 +987,12 @@ class DisplayServer:
             return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
         task = body.get("task")
-        if task not in ("reproduce", "report", "paper"):
+        _dispatch_mod._require_config()
+        if task not in _dispatch_mod._TASK_CONFIG:
+            available = ", ".join(sorted(_dispatch_mod._TASK_CONFIG))
             return JSONResponse(
                 {
-                    "error": f"Unknown task: {task!r} (expected 'reproduce', 'report', or 'paper')"
+                    "error": f"Unknown task: {task!r} (expected one of: {available})"
                 },
                 status_code=400,
             )
