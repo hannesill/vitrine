@@ -1,6 +1,6 @@
 # vitrine
 
-**The research journal your code writes to.**
+**Stay in the loop of autonomous research agents. Vitrine provides a powerful, interactive research log your agents can easily write to.**
 
 Every `show()` call adds a card to a persistent, browsable record — tables, charts, decisions, reasoning. Open the browser to see where an analysis stands, review past decisions, trace provenance. Studies persist on disk, survive restarts, and export as self-contained HTML.
 
@@ -46,7 +46,7 @@ The server auto-starts on first `show()` and opens a browser tab. No setup, no c
 
 ## Why Vitrine
 
-Research happens in code. But results scatter across terminal output, notebook cells, and lost matplotlib windows. Vitrine gives every result a permanent home — a chronological journal that captures not just what was produced, but why.
+Research happens in code. But results scatter across terminal output, notebook cells, and lost matplotlib windows. Vitrine gives every result a permanent home — a chronological log that captures not just what was produced, but why.
 
 **One function, many types.** DataFrames become paginated tables with server-side sort and search via DuckDB. Plotly figures render interactively. Matplotlib figures convert to SVG. Strings render as markdown. Dicts become key-value cards. Images display natively.
 
