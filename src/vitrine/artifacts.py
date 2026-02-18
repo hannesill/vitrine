@@ -3,7 +3,7 @@
 Persists large objects (DataFrames, chart specs) to disk so the WebSocket
 stays lightweight. The artifact store uses a session directory layout:
 
-    {m4_data}/display/{session_id}/
+    {vitrine_dir}/display/{session_id}/
     ├── index.json              # Card descriptors in insertion order
     ├── artifacts/
     │   ├── {card_id}.parquet   # DataFrame artifacts

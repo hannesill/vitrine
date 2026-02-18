@@ -512,5 +512,5 @@ window.addEventListener('hashchange', function() {
 });
 
 function buildStudyPrompt(studyLabel) {
-  return 'claude -p "$(cat <<\'EOF\'\n/m4-vitrine\nResume research study "' + studyLabel + '". Use study_context("' + studyLabel + '") to review prior work.\nUse show(..., study="' + studyLabel + '") for all output.\n\n\nEOF\n)"';
+  return 'claude -p "$(cat <<\'EOF\'\n/vitrine\nResume research study "' + studyLabel + '". Use study_context("' + studyLabel + '") to review prior work.\nUse show(..., study="' + studyLabel + '") for all output.\n\n\nEOF\n)"';
 }

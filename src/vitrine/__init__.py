@@ -87,7 +87,7 @@ def _get_vitrine_dir() -> Path:
     VITRINE_DATA_DIR env var, walks up from cwd for .vitrine/, or defaults
     to cwd/.vitrine.
 
-    Performs one-time migration from the old m4_data/vitrine/ location.
+    Performs one-time migration from the old M4_DATA_DIR/vitrine/ location.
     """
     from vitrine._utils import get_vitrine_dir
 
@@ -98,8 +98,8 @@ def _get_vitrine_dir() -> Path:
 
 def _migrate_if_needed(vitrine_dir: Path) -> None:
     """Migrate storage from old layout to new layout if needed."""
-    # 1. Move m4_data/vitrine/ -> .vitrine/ (same parent)
-    # Check M4_DATA_DIR env var for the old m4 data directory
+    # 1. Move legacy M4_DATA_DIR/vitrine/ -> .vitrine/ (same parent)
+    # Check M4_DATA_DIR env var for the old data directory
     old_dir = None
     m4_data = os.getenv("M4_DATA_DIR")
     if m4_data:

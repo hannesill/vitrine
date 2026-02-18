@@ -7,7 +7,7 @@ var _sunIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stro
 var _moonIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>';
 
 function initTheme() {
-  var saved = localStorage.getItem('m4-vitrine-theme');
+  var saved = localStorage.getItem('vitrine-theme');
   if (saved === 'dark') {
     document.documentElement.setAttribute('data-theme', 'dark');
     themeToggleEl.innerHTML = _sunIcon;
@@ -20,12 +20,12 @@ themeToggleEl.onclick = function() {
   var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
   if (isDark) {
     document.documentElement.removeAttribute('data-theme');
-    localStorage.setItem('m4-vitrine-theme', 'light');
+    localStorage.setItem('vitrine-theme', 'light');
     themeToggleEl.innerHTML = _moonIcon;
     _swapHljsTheme(false);
   } else {
     document.documentElement.setAttribute('data-theme', 'dark');
-    localStorage.setItem('m4-vitrine-theme', 'dark');
+    localStorage.setItem('vitrine-theme', 'dark');
     themeToggleEl.innerHTML = _sunIcon;
     _swapHljsTheme(true);
   }

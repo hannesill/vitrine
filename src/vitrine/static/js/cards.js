@@ -1098,7 +1098,7 @@ function showEmptyState() {
   empty.innerHTML = '<div style="font-size: 32px; opacity: 0.3;">&#9671;</div>'
     + '<div style="font-size: 15px; font-weight: 500;">No studies yet</div>'
     + '<div style="font-size: 13px;">Run an agent to get started</div>'
-    + '<div><code>from m4.vitrine import show</code></div>';
+    + '<div><code>from vitrine import show</code></div>';
   feed.appendChild(empty);
 }
 
@@ -1593,6 +1593,6 @@ function buildCardPrompt(card) {
   } else if (card.card_type === 'image') {
     prompt += 'Type: image\n';
   }
-  prompt += '/m4-vitrine\n\n';
+  prompt += '/vitrine\n\n';
   return prompt;
 }

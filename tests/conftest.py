@@ -12,7 +12,7 @@ def _configure_dispatch(tmp_path):
     """Set up dispatch with test skill directories and task config.
 
     Creates minimal SKILL.md files for the three dispatch tasks so that
-    build_prompt() and _build_agent_preview() work without the real m4
+    build_prompt() and _build_agent_preview() work without the real
     skills directory.
     """
     import vitrine.dispatch as _mod
