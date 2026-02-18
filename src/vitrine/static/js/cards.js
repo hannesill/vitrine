@@ -1116,13 +1116,13 @@ function sendDismissEvent(cardId, dismissed) {
 }
 
 function sendDeleteEvent(cardId, deleted) {
-  if (!state.ws || !state.connected) return;
-  state.ws.send(JSON.stringify({
-    type: 'vitrine.event',
-    event_type: 'delete',
-    card_id: cardId,
-    payload: { deleted: deleted }
-  }));
+  // Use HTTP POST with keepalive so the request survives page reload.
+  fetch('/api/card/' + encodeURIComponent(cardId) + '/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deleted: deleted }),
+    keepalive: true
+  }).catch(function() {});
 }
 
 function applyDismissFilter() {

@@ -185,6 +185,11 @@ class DisplayServer:
             Route("/api/table/{card_id}/export", self._api_table_export),
             Route("/api/table/{card_id}", self._api_table),
             Route("/api/card/{card_id}", self._api_card),
+            Route(
+                "/api/card/{card_id}/delete",
+                self._api_card_delete,
+                methods=["POST"],
+            ),
             Route("/api/artifact/{card_id}", self._api_artifact),
             Route("/api/session", self._api_session),
             Route("/api/command", self._api_command, methods=["POST"]),
@@ -329,6 +334,53 @@ class DisplayServer:
             if card.card_id.startswith(id_prefix):
                 return JSONResponse(_serialize_card(card))
         return JSONResponse({"error": f"Card {raw} not found"}, status_code=404)
+
+    async def _api_card_delete(self, request: Request) -> JSONResponse:
+        """Soft-delete or restore a card.
+
+        Uses HTTP POST (not WebSocket) so the request survives page
+        navigation via ``fetch(keepalive: true)``.
+
+        Expects JSON body ``{"deleted": true}`` or ``{"deleted": false}``.
+        """
+        card_id = request.path_params["card_id"]
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+        deleted = body.get("deleted", True)
+
+        # Cancel running agent if deleting an agent card
+        if deleted and card_id in self._dispatches:
+            from vitrine.dispatch import cancel_agent
+
+            await cancel_agent(card_id, self)
+
+        store = self._resolve_store(card_id)
+        if store is None:
+            return JSONResponse(
+                {"error": f"Card {card_id} not found"}, status_code=404
+            )
+
+        updates: dict[str, Any] = {"deleted": deleted}
+        if deleted:
+            updates["deleted_at"] = datetime.now(timezone.utc).isoformat()
+        else:
+            updates["deleted_at"] = None
+        updated = store.update_card(card_id, **updates)
+        if updated:
+            await self._broadcast(
+                {
+                    "type": "display.update",
+                    "card_id": card_id,
+                    "card": _serialize_card(updated),
+                }
+            )
+            return JSONResponse({"status": "ok"})
+        return JSONResponse(
+            {"error": f"Card {card_id} not found"}, status_code=404
+        )
 
     async def _api_table(self, request: Request) -> JSONResponse:
         """Return a page of table data from a stored Parquet artifact."""

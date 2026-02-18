@@ -16,6 +16,7 @@ function updateCardCount() {
   var inScope = 0;   // cards matching current study filter
   var visible = 0;   // matching filter AND not dismissed
   all.forEach(function(el) {
+    if (el.classList.contains('hidden-by-delete') || el.classList.contains('deleted')) return;
     if (!el.classList.contains('hidden-by-filter')) {
       inScope++;
       if (!el.classList.contains('hidden-by-dismiss')) visible++;
