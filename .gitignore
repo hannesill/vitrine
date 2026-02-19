@@ -208,3 +208,9 @@ __marimo__/
 
 # Vitrine
 .vitrine
+marketing/
+
+# Agents
+.agents/
+.claude/
+.cursor/

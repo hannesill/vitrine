@@ -1,8 +1,10 @@
-# vitrine
+# Vitrine
 
 **Stay in the loop of autonomous research agents. Vitrine provides a powerful, interactive research log your agents can easily write to.**
 
 Every `show()` call adds a card to a persistent, browsable record — tables, charts, decisions, reasoning. Open the browser to see where an analysis stands, review past decisions, trace provenance. Studies persist on disk, survive restarts, and export as self-contained HTML.
+
+[![Watch the demo](https://img.shields.io/badge/Watch-Demo_Video-blue?style=for-the-badge)](https://share.descript.com/view/rE8xbiybB44)
 
 ```python
 from vitrine import show
@@ -13,6 +15,16 @@ show("## Exclusion Decision\nRemoving patients with ICU stay < 24h.")
 ```
 
 Three lines. A browser tab opens. Your analysis has a permanent, shareable record.
+
+---
+
+## Why Vitrine
+
+Research happens in code. But results scatter across terminal output, notebook cells, and lost matplotlib windows. The gap between "got results" and "published paper" is enormous — and it's the part researchers hate most.
+
+Jupyter is the de facto tool for computational research, and it's terrible for reproducibility, collaboration, and publication. Vitrine is what Jupyter should have been for the age of AI-assisted research: structured provenance instead of cell execution order, blocking checkpoints instead of free-form code cells, publishable output instead of notebook soup.
+
+As AI agents become capable of running entire research pipelines, the bottleneck shifts from *"can the agent do the analysis?"* to *"can we trust the analysis?"* Vitrine captures provenance as a side effect of the workflow, not as an afterthought. The researcher doesn't do extra work to get reproducibility — they get it by using the tool.
 
 ## Install
 
@@ -44,15 +56,39 @@ show({"patients": 4238, "mortality": "23%", "p_value": 0.003})
 
 The server auto-starts on first `show()` and opens a browser tab. No setup, no config.
 
-## Why Vitrine
+## Core Concepts
 
-Research happens in code. But results scatter across terminal output, notebook cells, and lost matplotlib windows. Vitrine gives every result a permanent home — a chronological log that captures not just what was produced, but why.
+### One Function, Many Types
 
-**One function, many types.** DataFrames become paginated tables with server-side sort and search via DuckDB. Plotly figures render interactively. Matplotlib figures convert to SVG. Strings render as markdown. Dicts become key-value cards. Images display natively.
+DataFrames become paginated tables with server-side sort and search via DuckDB. Plotly figures render interactively. Matplotlib figures convert to SVG. Strings render as markdown. Dicts become key-value cards. Images display natively.
 
-**Studies, not sessions.** Group cards by research question with `study="sepsis-v1"`. Studies persist on disk across server restarts, forming a provenance trail you can revisit weeks later. Each study is a dated directory with card descriptors, metadata, and artifact files.
+### Studies, Not Sessions
 
-**Human-in-the-loop decisions.** Block execution until a researcher confirms, chooses, or steers:
+Group cards by research question with `study="sepsis-v1"`. Studies persist on disk across server restarts, forming a provenance trail you can revisit weeks later. Each study is a dated directory with card descriptors, metadata, and artifact files.
+
+```python
+from vitrine import show, list_studies, export, study_context
+
+show(df, title="Baseline", study="sepsis-v1")
+show(fig, title="Survival Curve", study="sepsis-v1")
+
+# Browse all studies
+for s in list_studies():
+    print(f"{s['label']}: {s['card_count']} cards")
+
+# Export as self-contained HTML
+export("sepsis-v1-report.html", study="sepsis-v1")
+
+# Re-orient after a break
+ctx = study_context("sepsis-v1")
+print(ctx["card_count"], "cards,", len(ctx["decisions"]), "decisions made")
+```
+
+Deep links: `http://localhost:7741/#study=sepsis-v1` opens directly to a study.
+
+### Human-in-the-Loop Decisions
+
+Block execution until a researcher confirms, chooses, or steers:
 
 ```python
 from vitrine import show, confirm, ask
@@ -78,7 +114,9 @@ print(response.message)  # Free-text steering from the researcher
 
 Decision cards freeze into permanent records of what was decided and when — provenance by default.
 
-**Passive selection tracking.** Researchers select table rows and chart points while browsing. The agent reads selections whenever it needs them:
+### Passive Selection Tracking
+
+Researchers select table rows and chart points while browsing. The agent reads selections whenever it needs them:
 
 ```python
 from vitrine import get_selection
@@ -88,53 +126,7 @@ selected = get_selection(card_id)  # Returns a DataFrame of selected rows
 
 No polling, no callbacks, no event loops. Just pull when ready.
 
-## Architecture
-
-```
-Agent writes Python    →    show(obj)    →    Artifact Store    →    Browser tab
-                            localhost         + WebSocket            live render
-```
-
-Large objects are persisted as Parquet/JSON/SVG on disk. The WebSocket sends lightweight card references. Tables are paged server-side via DuckDB on Parquet — no browser crashes, no data size limits. The frontend is a single self-contained HTML file with vendored JS (Plotly.js, marked.js). No build step. Works offline. Works on air-gapped networks.
-
-## Studies
-
-```python
-from vitrine import show, list_studies, export, study_context
-
-# Cards are grouped by study
-show(df, title="Baseline", study="sepsis-v1")
-show(fig, title="Survival Curve", study="sepsis-v1")
-
-# Browse all studies
-for s in list_studies():
-    print(f"{s['label']}: {s['card_count']} cards")
-
-# Export as self-contained HTML
-export("sepsis-v1-report.html", study="sepsis-v1")
-
-# Re-orient after a break
-ctx = study_context("sepsis-v1")
-print(ctx["card_count"], "cards,", len(ctx["decisions"]), "decisions made")
-```
-
-Deep links: `http://localhost:7741/#study=sepsis-v1` opens directly to a study.
-
-## Progress Tracking
-
-```python
-from vitrine import progress
-
-with progress("Building cohort", study="sepsis-v1") as status:
-    load_data()
-    status("Applying exclusions...")
-    apply_exclusions()
-    status("Computing features...")
-    compute_features()
-# Card auto-updates to ✓ complete (or ✗ failed on exception)
-```
-
-## Structured Input
+### Structured Input
 
 Collect structured responses with `Form` and `Question`:
 
@@ -158,6 +150,29 @@ form = Form([
 response = show(form, title="Analysis Parameters", study="sepsis-v1")
 print(response.values)  # {"severity_score": "SOFA", "focus": ["Mortality", "Readmission"]}
 ```
+
+### Progress Tracking
+
+```python
+from vitrine import progress
+
+with progress("Building cohort", study="sepsis-v1") as status:
+    load_data()
+    status("Applying exclusions...")
+    apply_exclusions()
+    status("Computing features...")
+    compute_features()
+# Card auto-updates to ✓ complete (or ✗ failed on exception)
+```
+
+## Architecture
+
+```
+Agent writes Python    →    show(obj)    →    Artifact Store    →    Browser tab
+                            localhost         + WebSocket            live render
+```
+
+Large objects are persisted as Parquet/JSON/SVG on disk. The WebSocket sends lightweight card references. Tables are paged server-side via DuckDB on Parquet — no browser crashes, no data size limits. The frontend is a single self-contained HTML file with vendored JS (Plotly.js, marked.js). No build step. Works offline. Works on air-gapped networks.
 
 ## CLI
 
@@ -211,10 +226,12 @@ on_event(callback) -> None
 list_annotations(study=None) -> list[dict]
 ```
 
-## Design
+## Roadmap
 
-Neobrutalist UI. Thick black borders, offset box-shadows, zero border-radius, Space Grotesk + DM Mono type. Card headers are color-coded by type for instant visual scanning: blue (table), purple (markdown), green (chart), amber (key-value), pink (form), red (decision), cyan (image). Dark and light themes. Print-optimized CSS.
+Vitrine is a production-ready research journal today. Where it's going is **the system of record for agentic research** — the way GitHub became the system of record for code.
 
-## License
-
-MIT
+- **Living Paper** — Export studies as manuscript skeletons in IMRAD structure with auto-generated methods from the decision trail. Go from finished study to paper draft, not just a card dump.
+- **Review Mode** — Structured collaborative review: PIs approve, flag, or request revisions on any card. Reviews produce actionable items the agent picks up directly.
+- **Validation Overlays** — Automatic statistical sanity checks on every card: sample size warnings, class imbalance, missing data rates, effect size assessment. The clinical intelligence layer that makes Vitrine trustworthy for research.
+- **Study Branching** — Fork a study at any decision point to explore alternatives. Side-by-side comparison of branches. Git for research studies.
+- **Cross-Study Memory** — Surface patterns across a lab's entire body of work. "Across all sepsis studies, we consistently found X."
