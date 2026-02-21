@@ -170,15 +170,15 @@ function addCard(cardData) {
   // Copy prompt button
   var promptBtn = document.createElement('button');
   promptBtn.className = 'card-action-btn copy-prompt-btn';
-  promptBtn.title = 'Copy prompt for agent';
-  promptBtn.setAttribute('aria-label', 'Copy prompt for agent');
+  promptBtn.title = 'Copy card content';
+  promptBtn.setAttribute('aria-label', 'Copy card content');
   promptBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="8" height="10" rx="1"/><path d="M3 6v7a1 1 0 001 1h7"/></svg>';
   promptBtn.onclick = function(e) {
     e.stopPropagation();
     var prompt = buildCardPrompt(cardData);
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(prompt).then(function() {
-        showToast('Prompt copied');
+        showToast('Card copied');
       }, function() {
         showToast('Failed to copy', 'error');
       });
@@ -1581,18 +1581,153 @@ function formatElapsed(isoTimestamp) {
 }
 
 function buildCardPrompt(card) {
-  var prompt = 'Re: "' + (card.title || 'Untitled') + '" [card:' + card.card_id + (card.study ? ', study:' + card.study : '') + ']\n';
+  var header = '## ' + (card.title || 'Untitled') + '  [card:' + card.card_id + (card.study ? ', study:' + card.study : '') + ']\n\n';
+
   if (card.card_type === 'table' && card.preview && card.preview.columns) {
-    var cols = card.preview.columns.join(', ');
-    var rows = card.preview.row_count || (card.preview.rows ? card.preview.rows.length : '?');
-    prompt += 'Preview: ' + rows + ' rows \u00d7 ' + card.preview.columns.length + ' cols (' + cols + ')\n';
-  } else if (card.card_type === 'plotly') {
-    prompt += 'Type: plotly chart\n';
-  } else if (card.card_type === 'keyvalue') {
-    prompt += 'Type: key-value\n';
-  } else if (card.card_type === 'image') {
-    prompt += 'Type: image\n';
+    return header + _buildTablePrompt(card.preview);
   }
-  prompt += '/vitrine\n\n';
-  return prompt;
+  if (card.card_type === 'markdown' && card.preview && card.preview.text) {
+    return header + card.preview.text + '\n';
+  }
+  if (card.card_type === 'keyvalue' && card.preview && card.preview.items) {
+    return header + _buildKeyValuePrompt(card.preview.items);
+  }
+  if (card.card_type === 'plotly' && card.preview && card.preview.spec) {
+    return header + _buildPlotlyPrompt(card.preview.spec);
+  }
+  if (card.card_type === 'decision' && card.preview) {
+    return header + _buildDecisionPrompt(card);
+  }
+  if (card.card_type === 'agent' && card.preview) {
+    return header + _buildAgentPrompt(card.preview);
+  }
+  if (card.card_type === 'image') {
+    return header + '*(image — not copyable as text)*\n';
+  }
+  return header;
+}
+
+function _buildTablePrompt(preview) {
+  var shape = preview.shape || [0, 0];
+  var totalRows = shape[0];
+  var totalCols = shape[1];
+  var rows = preview.preview_rows || [];
+  var cols = preview.columns || [];
+  var maxPreviewRows = 20;
+  var maxCols = 20;
+
+  var displayCols = cols.length > maxCols ? cols.slice(0, maxCols) : cols;
+  var colsTruncated = cols.length > maxCols;
+
+  var lines = [];
+  lines.push(totalRows.toLocaleString() + ' rows \u00d7 ' + totalCols + ' columns\n');
+
+  // Header row
+  lines.push('| ' + displayCols.join(' | ') + (colsTruncated ? ' | \u2026' : '') + ' |');
+  // Separator
+  var sep = displayCols.map(function(c) {
+    var dtype = preview.dtypes && preview.dtypes[c] || '';
+    return dtype.match(/int|float|num/i) ? '---:' : '---';
+  });
+  lines.push('| ' + sep.join(' | ') + (colsTruncated ? ' | ---' : '') + ' |');
+
+  // Data rows
+  var displayRows = rows.length > maxPreviewRows ? rows.slice(0, maxPreviewRows) : rows;
+  displayRows.forEach(function(row) {
+    var vals = [];
+    for (var i = 0; i < displayCols.length; i++) {
+      var v = i < row.length ? row[i] : '';
+      vals.push(v === null ? '\u2014' : String(v));
+    }
+    lines.push('| ' + vals.join(' | ') + (colsTruncated ? ' | \u2026' : '') + ' |');
+  });
+
+  if (totalRows > displayRows.length) {
+    lines.push('\n*(' + displayRows.length + ' of ' + totalRows.toLocaleString() + ' rows shown)*');
+  }
+
+  return lines.join('\n') + '\n';
+}
+
+function _buildKeyValuePrompt(items) {
+  var lines = [];
+  Object.keys(items).forEach(function(k) {
+    lines.push('- **' + k + '**: ' + items[k]);
+  });
+  return lines.join('\n') + '\n';
+}
+
+function _buildPlotlyPrompt(spec) {
+  var layout = spec.layout || {};
+  var data = spec.data || [];
+  var lines = [];
+
+  // Title
+  var title = layout.title;
+  if (title) {
+    lines.push('**' + (typeof title === 'object' ? title.text || '' : title) + '**\n');
+  }
+
+  // Axes
+  var xLabel = layout.xaxis && layout.xaxis.title;
+  var yLabel = layout.yaxis && layout.yaxis.title;
+  if (xLabel || yLabel) {
+    var axParts = [];
+    if (xLabel) axParts.push('X: ' + (typeof xLabel === 'object' ? xLabel.text || '' : xLabel));
+    if (yLabel) axParts.push('Y: ' + (typeof yLabel === 'object' ? yLabel.text || '' : yLabel));
+    lines.push(axParts.join('  |  '));
+  }
+
+  // Traces summary
+  if (data.length > 0) {
+    lines.push('');
+    data.forEach(function(trace, i) {
+      var name = trace.name || ('Trace ' + (i + 1));
+      var type = trace.type || 'scatter';
+      var n = 0;
+      if (trace.x && trace.x.length) n = trace.x.length;
+      else if (trace.y && trace.y.length) n = trace.y.length;
+      else if (trace.values && trace.values.length) n = trace.values.length;
+      lines.push('- ' + name + ' (' + type + ', ' + n + ' points)');
+    });
+  }
+
+  return lines.join('\n') + '\n';
+}
+
+function _buildDecisionPrompt(card) {
+  var lines = [];
+  var fields = (card.preview && card.preview.fields) || [];
+  fields.forEach(function(f) {
+    if (f.question) lines.push('**Q:** ' + f.question);
+    if (f.options && f.options.length > 0) {
+      f.options.forEach(function(opt) {
+        var label = typeof opt === 'object' ? opt.label : opt;
+        lines.push('  - ' + label);
+      });
+    }
+  });
+  if (card.response_action) {
+    lines.push('\n**Response:** ' + card.response_action);
+    if (card.response_values) {
+      Object.keys(card.response_values).forEach(function(k) {
+        lines.push('- ' + k + ': ' + card.response_values[k]);
+      });
+    }
+    if (card.response_message) {
+      lines.push('*Note:* ' + card.response_message);
+    }
+  }
+  return lines.join('\n') + '\n';
+}
+
+function _buildAgentPrompt(preview) {
+  var lines = [];
+  var status = preview.status || 'pending';
+  var model = MODEL_DISPLAY[preview.model] || preview.model || '';
+  lines.push('Agent: ' + status + (model ? ' (' + model + ')' : ''));
+  if (preview.task) lines.push('Task: ' + preview.task);
+  if (preview.duration != null) lines.push('Duration: ' + formatAgentDuration(preview.duration));
+  if (preview.error) lines.push('Error: ' + preview.error);
+  return lines.join('\n') + '\n';
 }
