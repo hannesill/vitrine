@@ -291,6 +291,7 @@ _DEFAULT_TASK_CONFIG: dict[str, tuple[str, str, str]] = {
     "reproduce": ("reproduce-study", "Reproducibility Audit", "Bash,Read,Glob,Grep"),
     "report": ("export-report", "Study Report", "Read,Glob,Grep"),
     "paper": ("draft-paper", "Paper Draft", "Bash,Read,Glob,Grep,Write"),
+    "presentation": ("create-presentation", "Presentation", "Bash,Read,Glob,Grep,Write"),
 }
 
 
@@ -666,9 +667,16 @@ async def run_agent(
     elif info.task == "paper":
         output_dir = server.study_manager.get_output_dir(info.study)
         if output_dir and output_dir.exists():
-            paper_dir, copied = _create_paper_workspace(output_dir)
+            paper_dir, copied = _create_paper_workspace(output_dir, "paper")
             work_dir = paper_dir
             info.extra["paper_workspace"] = str(paper_dir)
+            info.extra["paper_copies"] = copied
+    elif info.task == "presentation":
+        output_dir = server.study_manager.get_output_dir(info.study)
+        if output_dir and output_dir.exists():
+            pres_dir, copied = _create_paper_workspace(output_dir, "presentation")
+            work_dir = pres_dir
+            info.extra["paper_workspace"] = str(pres_dir)
             info.extra["paper_copies"] = copied
 
     prompt = build_prompt(
@@ -857,9 +865,11 @@ def _cleanup_sandbox(sandbox: Path) -> None:
         logger.info(f"Cleaned up sandbox: {sandbox}")
 
 
-def _create_paper_workspace(output_dir: Path) -> tuple[Path, list[str]]:
-    """Create a paper workspace with copies of study artifacts."""
-    paper_dir = output_dir / "paper"
+def _create_paper_workspace(
+    output_dir: Path, subdir: str = "paper"
+) -> tuple[Path, list[str]]:
+    """Create a workspace with copies of study artifacts."""
+    paper_dir = output_dir / subdir
     paper_dir.mkdir(exist_ok=True)
     copied: list[str] = []
     for item in ("scripts", "data", "plots", "PROTOCOL.md", "RESULTS.md", "REPORT.md"):

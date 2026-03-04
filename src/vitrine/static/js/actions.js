@@ -113,6 +113,15 @@ function getActions() {
         createAgentCard(studyLabel, 'paper');
       }
     });
+
+    // Create Presentation
+    actions.push({
+      icon: '&#127916;',
+      label: 'Create Presentation',
+      handler: function() {
+        createAgentCard(studyLabel, 'presentation');
+      }
+    });
   }
 
   return actions;
