@@ -196,6 +196,18 @@ function addCard(cardData) {
   };
   actions.appendChild(promptBtn);
 
+  // Export as PNG button
+  var exportBtn = document.createElement('button');
+  exportBtn.className = 'card-action-btn export-png-btn';
+  exportBtn.title = 'Export as PNG';
+  exportBtn.setAttribute('aria-label', 'Export as PNG');
+  exportBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 11v2a1 1 0 001 1h10a1 1 0 001-1v-2"/><polyline points="5 7 8 10 11 7"/><line x1="8" y1="3" x2="8" y2="10"/></svg>';
+  exportBtn.onclick = function(e) {
+    e.stopPropagation();
+    exportCardAsPng(el, cardData);
+  };
+  actions.appendChild(exportBtn);
+
   // Annotate button
   var annotateBtn = document.createElement('button');
   annotateBtn.className = 'card-action-btn';
