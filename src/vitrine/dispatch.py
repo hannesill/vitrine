@@ -22,10 +22,12 @@ import logging
 import os
 import shutil
 import subprocess
+import tempfile
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -39,10 +41,245 @@ _DISPATCH_TIMEOUT = 1800  # 30 minutes
 _UPDATE_INTERVAL = 0.5  # seconds between card updates (debounce)
 _SANDBOX_SUFFIX = "_reproduce"  # suffix for sandboxed output directory copies
 _MAX_CONCURRENT = 5  # global running agent limit
-_MODEL_CONTEXT_WINDOWS = {
-    "sonnet": 200_000,
-    "opus": 200_000,
-    "haiku": 200_000,
+@dataclass
+class BackendConfig:
+    """Configuration for a CLI agent backend (Claude Code, Gemini CLI, Codex CLI)."""
+
+    name: str  # "claude", "gemini", "codex"
+    display_name: str  # "Claude Code", "Gemini CLI", "Codex CLI"
+    binary: str  # "claude", "gemini", "codex"
+    default_model: str
+    models: dict[str, str]  # {value: display_name}
+    context_windows: dict[str, int]
+    env_strip: list[str]  # env vars to strip from child process
+    # Returns (args, stdin_payload, temp_files_to_cleanup)
+    build_args: Callable[..., tuple[list[str], bytes | None, list[str]]] = None  # type: ignore[assignment]
+    parse_event: Callable[[str], tuple[str, str, dict[str, Any] | None]] = None  # type: ignore[assignment]
+
+
+_PROMPT_FILE_THRESHOLD = 100_000  # bytes — use temp file above this
+
+
+def _prompt_as_arg_or_file(prompt: str) -> tuple[str, str | None]:
+    """Return (arg_value, tmp_path|None).
+
+    If the prompt is short enough for a positional CLI arg, returns
+    (prompt, None).  Otherwise writes it to a temp file and returns
+    (@file_path, file_path) so the caller can clean up the file later.
+    """
+    encoded = prompt.encode()
+    if len(encoded) <= _PROMPT_FILE_THRESHOLD:
+        return prompt, None
+    f = tempfile.NamedTemporaryFile(
+        mode="wb", suffix=".md", prefix="vitrine-prompt-", delete=False,
+    )
+    f.write(encoded)
+    f.close()
+    return f"@{f.name}", f.name
+
+
+def _build_claude_args(
+    binary: str,
+    prompt: str,
+    model: str,
+    allowed_tools: str,
+    budget: float | None,
+) -> tuple[list[str], bytes | None, list[str]]:
+    """Build CLI args for Claude Code. Prompt is piped via stdin."""
+    args = [
+        binary,
+        "-p", "-",
+        "--output-format", "stream-json",
+        "--verbose",
+        "--dangerously-skip-permissions",
+        "--allowedTools", allowed_tools,
+    ]
+    if model and model != "sonnet":
+        args.extend(["--model", model])
+    if budget is not None:
+        args.extend(["--max-turns", str(int(budget))])
+    return args, prompt.encode(), []
+
+
+def _build_gemini_args(
+    binary: str,
+    prompt: str,
+    model: str,
+    allowed_tools: str,
+    budget: float | None,
+) -> tuple[list[str], bytes | None, list[str]]:
+    """Build CLI args for Gemini CLI. Prompt is a positional arg."""
+    args = [
+        binary,
+        "--approval-mode", "yolo",
+        "--output-format", "stream-json",
+    ]
+    if model:
+        args.extend(["--model", model])
+    prompt_arg, tmp_path = _prompt_as_arg_or_file(prompt)
+    args.append(prompt_arg)
+    return args, None, [tmp_path] if tmp_path else []
+
+
+def _build_codex_args(
+    binary: str,
+    prompt: str,
+    model: str,
+    allowed_tools: str,
+    budget: float | None,
+) -> tuple[list[str], bytes | None, list[str]]:
+    """Build CLI args for Codex CLI. Prompt is a positional arg to exec."""
+    args = [
+        binary,
+        "exec",
+        "--full-auto",
+        "--sandbox", "danger-full-access",
+        "--json",
+    ]
+    if model:
+        args.extend(["--model", model])
+    prompt_arg, tmp_path = _prompt_as_arg_or_file(prompt)
+    args.append(prompt_arg)
+    return args, None, [tmp_path] if tmp_path else []
+
+
+def _parse_claude_event(line: str) -> tuple[str, str, dict[str, Any] | None]:
+    """Parse a Claude Code stream-json line."""
+    return _parse_stream_event(line)
+
+
+def _parse_gemini_event(line: str) -> tuple[str, str, dict[str, Any] | None]:
+    """Parse a Gemini CLI stream-json line.
+
+    Based on documented Gemini CLI output format. May need tuning
+    once tested against actual CLI output.
+    """
+    try:
+        obj = json.loads(line)
+    except (json.JSONDecodeError, ValueError):
+        return ("ignore", "", None)
+
+    evt_type = obj.get("type", "")
+
+    if evt_type == "text":
+        return ("text", obj.get("content", ""), None)
+
+    if evt_type == "tool_call":
+        name = obj.get("name", "?")
+        return ("tool_use", f"\n\n> *Using {name}...*\n\n", None)
+
+    if evt_type == "result":
+        usage_data = None
+        usage = obj.get("usage", {})
+        if usage:
+            usage_data = {
+                "input_tokens": usage.get("input_tokens", 0),
+                "output_tokens": usage.get("output_tokens", 0),
+                "cost_usd": usage.get("cost_usd"),
+            }
+        return ("result", obj.get("text", obj.get("result", "")), usage_data)
+
+    if evt_type == "error":
+        return ("error", obj.get("message", "Unknown error"), None)
+
+    return ("ignore", "", None)
+
+
+def _parse_codex_event(line: str) -> tuple[str, str, dict[str, Any] | None]:
+    """Parse a Codex CLI JSON output line.
+
+    Based on documented Codex CLI output format. May need tuning
+    once tested against actual CLI output.
+    """
+    try:
+        obj = json.loads(line)
+    except (json.JSONDecodeError, ValueError):
+        return ("ignore", "", None)
+
+    evt_type = obj.get("type", "")
+
+    if evt_type == "message":
+        content = obj.get("content", "")
+        if isinstance(content, list):
+            parts = [
+                b.get("text", "") for b in content if b.get("type") == "text"
+            ]
+            return ("text", "".join(parts), None)
+        return ("text", str(content), None)
+
+    if evt_type == "function_call":
+        name = obj.get("name", "?")
+        return ("tool_use", f"\n\n> *Using {name}...*\n\n", None)
+
+    if evt_type in ("result", "completed"):
+        usage_data = None
+        usage = obj.get("usage", {})
+        if usage:
+            usage_data = {
+                "input_tokens": usage.get("input_tokens", 0),
+                "output_tokens": usage.get("output_tokens", 0),
+                "cost_usd": usage.get("cost_usd"),
+            }
+        return ("result", obj.get("output", obj.get("result", "")), usage_data)
+
+    if evt_type == "error":
+        return ("error", obj.get("message", "Unknown error"), None)
+
+    return ("ignore", "", None)
+
+
+_BACKENDS: dict[str, BackendConfig] = {
+    "claude": BackendConfig(
+        name="claude",
+        display_name="Claude Code",
+        binary="claude",
+        default_model="sonnet",
+        models={
+            "sonnet": "Sonnet 4.5",
+            "opus": "Opus 4.6",
+            "haiku": "Haiku 4.5",
+        },
+        context_windows={
+            "sonnet": 200_000,
+            "opus": 200_000,
+            "haiku": 200_000,
+        },
+        env_strip=["CLAUDECODE"],
+        build_args=_build_claude_args,
+        parse_event=_parse_claude_event,
+    ),
+    "gemini": BackendConfig(
+        name="gemini",
+        display_name="Gemini CLI",
+        binary="gemini",
+        default_model="gemini-2.5-pro",
+        models={
+            "gemini-2.5-pro": "2.5 Pro",
+            "gemini-2.5-flash": "2.5 Flash",
+        },
+        context_windows={
+            "gemini-2.5-pro": 1_000_000,
+            "gemini-2.5-flash": 1_000_000,
+        },
+        env_strip=[],
+        build_args=_build_gemini_args,
+        parse_event=_parse_gemini_event,
+    ),
+    "codex": BackendConfig(
+        name="codex",
+        display_name="Codex CLI",
+        binary="codex",
+        default_model="gpt-5-codex",
+        models={
+            "gpt-5-codex": "GPT-5 Codex",
+        },
+        context_windows={
+            "gpt-5-codex": 200_000,
+        },
+        env_strip=[],
+        build_args=_build_codex_args,
+        parse_event=_parse_codex_event,
+    ),
 }
 
 # task name -> (skill directory, card title, allowed tools)
@@ -95,6 +332,7 @@ class DispatchInfo:
     study: str
     card_id: str = ""
     # Config (set at creation, user can override before run)
+    backend: str = "claude"
     model: str = "sonnet"
     budget: float | None = None
     additional_prompt: str = ""
@@ -209,14 +447,10 @@ user sees progress.
 """
 
 
-def _find_claude() -> str | None:
-    """Find the ``claude`` CLI binary in PATH."""
-    return shutil.which("claude")
-
-
 def _build_agent_preview(
     task: str,
     status: str,
+    backend: str = "claude",
     model: str = "sonnet",
     additional_prompt: str = "",
     budget: float | None = None,
@@ -234,9 +468,12 @@ def _build_agent_preview(
     if skill_path.exists():
         full_prompt = skill_path.read_text()
 
+    backend_cfg = _BACKENDS.get(backend, _BACKENDS["claude"])
+
     return {
         "task": task,
         "status": status,
+        "backend": backend,
         "model": model,
         "tools": allowed_tools.split(",") if allowed_tools else [],
         "prompt_preview": full_prompt[:200] + ("..." if len(full_prompt) > 200 else ""),
@@ -252,7 +489,7 @@ def _build_agent_preview(
         "usage": {
             "input_tokens": 0,
             "output_tokens": 0,
-            "context_window": _MODEL_CONTEXT_WINDOWS.get(model, 200_000),
+            "context_window": backend_cfg.context_windows.get(model, 200_000),
             "cost_usd": None,
         },
     }
@@ -391,21 +628,28 @@ async def run_agent(
     if running >= _MAX_CONCURRENT:
         raise RuntimeError(f"Maximum {_MAX_CONCURRENT} concurrent agents reached")
 
-    claude_path = _find_claude()
-    if claude_path is None:
-        raise ValueError(
-            "claude CLI not found in PATH. Install Claude Code: "
-            "https://docs.anthropic.com/en/docs/claude-code"
-        )
-
     # Apply config overrides
     if config:
+        if "backend" in config:
+            info.backend = config["backend"]
         if "model" in config:
             info.model = config["model"]
         if "budget" in config:
             info.budget = config["budget"]
         if "additional_prompt" in config:
             info.additional_prompt = config["additional_prompt"]
+
+    backend_cfg = _BACKENDS.get(info.backend)
+    if backend_cfg is None:
+        raise ValueError(
+            f"Unknown backend: {info.backend!r} (expected one of {list(_BACKENDS)})"
+        )
+
+    binary_path = shutil.which(backend_cfg.binary)
+    if binary_path is None:
+        raise ValueError(
+            f"{backend_cfg.display_name} CLI ({backend_cfg.binary!r}) not found in PATH."
+        )
 
     task_config = _TASK_CONFIG.get(info.task)
     if task_config is None:
@@ -435,25 +679,18 @@ async def run_agent(
         additional_prompt=info.additional_prompt,
     )
 
-    # Build CLI args
-    cli_args = [
-        claude_path,
-        "-p",
-        "-",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--dangerously-skip-permissions",
-        "--allowedTools",
-        allowed_tools,
-    ]
-    if info.model and info.model != "sonnet":
-        cli_args.extend(["--model", info.model])
-    if info.budget is not None:
-        cli_args.extend(["--max-turns", str(int(info.budget))])
+    # Build CLI args using the backend's arg builder
+    cli_args, stdin_payload, tmp_files = backend_cfg.build_args(
+        binary_path, prompt, info.model, allowed_tools, info.budget
+    )
+    if tmp_files:
+        info.extra["prompt_tmp_files"] = tmp_files
 
-    # Strip CLAUDECODE env var so the child doesn't think it's nested
-    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+    # Strip backend-specific env vars from child process
+    env = {
+        k: v for k, v in os.environ.items()
+        if k not in backend_cfg.env_strip
+    }
 
     from vitrine._utils import detached_popen_kwargs
 
@@ -467,9 +704,10 @@ async def run_agent(
         env=env,
     )
 
-    # Feed prompt and close stdin
+    # Feed prompt via stdin if the builder provided a payload, then close
+    if stdin_payload and proc.stdin:
+        proc.stdin.write(stdin_payload)
     if proc.stdin:
-        proc.stdin.write(prompt.encode())
         proc.stdin.close()
 
     info.process = proc
@@ -484,6 +722,7 @@ async def run_agent(
         server,
         {
             "status": "running",
+            "backend": info.backend,
             "model": info.model,
             "additional_prompt": info.additional_prompt,
             "budget": info.budget,
@@ -493,7 +732,7 @@ async def run_agent(
             "usage": {
                 "input_tokens": 0,
                 "output_tokens": 0,
-                "context_window": _MODEL_CONTEXT_WINDOWS.get(info.model, 200_000),
+                "context_window": backend_cfg.context_windows.get(info.model, 200_000),
                 "cost_usd": None,
             },
         },
@@ -660,11 +899,15 @@ async def _stream_monitor(info: DispatchInfo, server: DisplayServer) -> None:
     config = _TASK_CONFIG.get(info.task, ("", "", ""))
     _, card_title, _ = config
 
+    # Look up backend config for parser and context windows
+    backend_cfg = _BACKENDS.get(info.backend, _BACKENDS["claude"])
+    parse_event = backend_cfg.parse_event
+
     # Usage tracking
     usage: dict[str, Any] = {
         "input_tokens": 0,
         "output_tokens": 0,
-        "context_window": _MODEL_CONTEXT_WINDOWS.get(info.model, 200_000),
+        "context_window": backend_cfg.context_windows.get(info.model, 200_000),
         "cost_usd": None,
     }
 
@@ -686,7 +929,7 @@ async def _stream_monitor(info: DispatchInfo, server: DisplayServer) -> None:
             if not line:
                 continue
 
-            kind, text, event_usage = _parse_stream_event(line)
+            kind, text, event_usage = parse_event(line)
 
             if kind == "result":
                 final_result = text
@@ -812,6 +1055,11 @@ async def _stream_monitor(info: DispatchInfo, server: DisplayServer) -> None:
         sandbox = info.extra.get("sandbox")
         if sandbox:
             _cleanup_sandbox(Path(sandbox))
+        for tmp in info.extra.get("prompt_tmp_files", []):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 async def cancel_agent(card_id: str, server: DisplayServer) -> bool:
@@ -847,6 +1095,11 @@ async def cancel_agent(card_id: str, server: DisplayServer) -> bool:
     sandbox = info.extra.get("sandbox")
     if sandbox:
         _cleanup_sandbox(Path(sandbox))
+    for tmp in info.extra.get("prompt_tmp_files", []):
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
     config = _TASK_CONFIG.get(info.task, ("", "", ""))
     _, card_title, _ = config
@@ -870,6 +1123,7 @@ def get_agent_status(card_id: str, server: DisplayServer) -> dict[str, Any] | No
         "card_id": info.card_id,
         "study": info.study,
         "task": info.task,
+        "backend": info.backend,
         "model": info.model,
         "pid": info.pid,
         "error": info.error,
@@ -922,6 +1176,11 @@ def cleanup_dispatches(server: DisplayServer) -> None:
         sandbox = info.extra.get("sandbox")
         if sandbox:
             _cleanup_sandbox(Path(sandbox))
+        for tmp in info.extra.get("prompt_tmp_files", []):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
     server._dispatches.clear()
 
 

@@ -32,6 +32,8 @@ As AI agents become capable of running entire research pipelines, the bottleneck
 pip install vitrine
 ```
 
+**Optional:** The built-in agent actions (Reproduce, Report, Paper) spawn headless CLI agent sessions. Supported backends: [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`), [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini`), and [Codex CLI](https://github.com/openai/codex) (`codex`). Install any of these and select your preferred backend from the agent config form before running.
+
 ## Quick Start
 
 ```python
