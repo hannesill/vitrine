@@ -3,11 +3,21 @@
 // ================================================================
 // MODEL DISPLAY NAMES
 // ================================================================
-var MODEL_DISPLAY = {
-  sonnet: 'Sonnet 4.5',
-  opus: 'Opus 4.6',
-  haiku: 'Haiku 4.5'
+var BACKENDS = {
+  claude: { display_name: 'Claude Code', models: { sonnet: 'Sonnet 4.5', opus: 'Opus 4.6', haiku: 'Haiku 4.5' }, default_model: 'sonnet' },
+  gemini: { display_name: 'Gemini CLI', models: { 'gemini-2.5-pro': '2.5 Pro', 'gemini-2.5-flash': '2.5 Flash' }, default_model: 'gemini-2.5-pro' },
+  codex:  { display_name: 'Codex CLI', models: { 'gpt-5-codex': 'GPT-5 Codex' }, default_model: 'gpt-5-codex' }
 };
+
+function getModelDisplay(model, backend) {
+  var b = BACKENDS[backend || 'claude'];
+  if (b && b.models[model]) return b.models[model];
+  // Fallback: search all backends
+  for (var key in BACKENDS) {
+    if (BACKENDS[key].models[model]) return BACKENDS[key].models[model];
+  }
+  return model || '';
+}
 
 var AGENT_THINKING_MESSAGES = [
   'Accomplishing', 'Actioning', 'Actualizing', 'Annotating', 'Auditing',
@@ -131,7 +141,7 @@ function addCard(cardData) {
   if (cardData.card_type === 'agent' && cardData.preview) {
     var modelBadge = document.createElement('span');
     modelBadge.className = 'agent-model-badge agent-header-badge';
-    modelBadge.textContent = MODEL_DISPLAY[cardData.preview.model] || cardData.preview.model || '';
+    modelBadge.textContent = getModelDisplay(cardData.preview.model, cardData.preview.backend);
     if (modelBadge.textContent) header.appendChild(modelBadge);
 
     // Status reason badge for failed/cancelled agents
@@ -622,11 +632,11 @@ function updateCard(cardId, newCardData) {
         var existingModelBadge = header.querySelector('.agent-header-badge');
         if (newCardData.preview.model) {
           if (existingModelBadge) {
-            existingModelBadge.textContent = MODEL_DISPLAY[newCardData.preview.model] || newCardData.preview.model;
+            existingModelBadge.textContent = getModelDisplay(newCardData.preview.model, newCardData.preview.backend);
           } else {
             var mb = document.createElement('span');
             mb.className = 'agent-model-badge agent-header-badge';
-            mb.textContent = MODEL_DISPLAY[newCardData.preview.model] || newCardData.preview.model;
+            mb.textContent = getModelDisplay(newCardData.preview.model, newCardData.preview.backend);
             var titleAfter = header.querySelector('.card-title');
             if (titleAfter) titleAfter.insertAdjacentElement('afterend', mb);
           }
@@ -708,7 +718,7 @@ function updateCard(cardId, newCardData) {
             if (!existingBadge && newCardData.preview.model) {
               var mb = document.createElement('span');
               mb.className = 'agent-model-badge agent-header-badge';
-              mb.textContent = MODEL_DISPLAY[newCardData.preview.model] || newCardData.preview.model;
+              mb.textContent = getModelDisplay(newCardData.preview.model, newCardData.preview.backend);
               var titleEl2 = hdr.querySelector('.card-title');
               if (titleEl2) titleEl2.insertAdjacentElement('afterend', mb);
             }
@@ -1220,7 +1230,26 @@ function renderAgentConfigForm(container, cardData) {
   var form = document.createElement('div');
   form.className = 'agent-config';
 
-  // Model selector
+  // Backend selector
+  var backendRow = document.createElement('div');
+  backendRow.className = 'agent-config-row';
+  var backendLabel = document.createElement('label');
+  backendLabel.className = 'agent-config-label';
+  backendLabel.textContent = 'Backend';
+  backendRow.appendChild(backendLabel);
+  var backendSelect = document.createElement('select');
+  backendSelect.className = 'agent-config-select';
+  Object.keys(BACKENDS).forEach(function(b) {
+    var opt = document.createElement('option');
+    opt.value = b;
+    opt.textContent = BACKENDS[b].display_name;
+    if (b === (preview.backend || 'claude')) opt.selected = true;
+    backendSelect.appendChild(opt);
+  });
+  backendRow.appendChild(backendSelect);
+  form.appendChild(backendRow);
+
+  // Model selector (populated dynamically based on backend)
   var modelRow = document.createElement('div');
   modelRow.className = 'agent-config-row';
   var modelLabel = document.createElement('label');
@@ -1229,13 +1258,26 @@ function renderAgentConfigForm(container, cardData) {
   modelRow.appendChild(modelLabel);
   var modelSelect = document.createElement('select');
   modelSelect.className = 'agent-config-select';
-  ['sonnet', 'opus', 'haiku'].forEach(function(m) {
-    var opt = document.createElement('option');
-    opt.value = m;
-    opt.textContent = MODEL_DISPLAY[m] || m;
-    if (m === (preview.model || 'sonnet')) opt.selected = true;
-    modelSelect.appendChild(opt);
+
+  function populateModels(backendName, selectedModel) {
+    modelSelect.innerHTML = '';
+    var b = BACKENDS[backendName] || BACKENDS.claude;
+    var models = b.models;
+    var defaultModel = selectedModel || b.default_model;
+    Object.keys(models).forEach(function(m) {
+      var opt = document.createElement('option');
+      opt.value = m;
+      opt.textContent = models[m];
+      if (m === defaultModel) opt.selected = true;
+      modelSelect.appendChild(opt);
+    });
+  }
+  populateModels(preview.backend || 'claude', preview.model);
+
+  backendSelect.addEventListener('change', function() {
+    populateModels(backendSelect.value, null);
   });
+
   modelRow.appendChild(modelSelect);
   form.appendChild(modelRow);
 
@@ -1320,6 +1362,7 @@ function renderAgentConfigForm(container, cardData) {
     runBtn.disabled = true;
     runBtn.textContent = 'Starting...';
     var config = {
+      backend: backendSelect.value,
       model: modelSelect.value,
       additional_prompt: instrTextarea.value.trim()
     };
@@ -1356,7 +1399,7 @@ function renderAgentRunning(container, cardData) {
 
   var modelBadge = document.createElement('span');
   modelBadge.className = 'agent-model-badge';
-  modelBadge.textContent = MODEL_DISPLAY[preview.model] || preview.model || 'Sonnet 4.5';
+  modelBadge.textContent = getModelDisplay(preview.model, preview.backend);
   strip.appendChild(modelBadge);
 
   var permsBadge = document.createElement('span');
@@ -1724,7 +1767,7 @@ function _buildDecisionPrompt(card) {
 function _buildAgentPrompt(preview) {
   var lines = [];
   var status = preview.status || 'pending';
-  var model = MODEL_DISPLAY[preview.model] || preview.model || '';
+  var model = getModelDisplay(preview.model, preview.backend);
   lines.push('Agent: ' + status + (model ? ' (' + model + ')' : ''));
   if (preview.task) lines.push('Task: ' + preview.task);
   if (preview.duration != null) lines.push('Duration: ' + formatAgentDuration(preview.duration));

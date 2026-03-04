@@ -34,6 +34,8 @@ from vitrine.dispatch import (
     _create_paper_workspace,
     _create_sandbox,
     _is_pid_alive,
+    _parse_codex_event,
+    _parse_gemini_event,
     _parse_stream_event,
     _stream_monitor,
     _update_agent_card,
@@ -391,6 +393,127 @@ class TestParseStreamEvent:
         kind, text, usage = _parse_stream_event(event)
         assert kind == "text"
         assert text == ""
+
+
+# ---------------------------------------------------------------------------
+# _parse_gemini_event
+# ---------------------------------------------------------------------------
+
+
+class TestParseGeminiEvent:
+    def test_invalid_json_returns_ignore(self):
+        kind, text, usage = _parse_gemini_event("not json")
+        assert kind == "ignore"
+        assert text == ""
+        assert usage is None
+
+    def test_unknown_type_returns_ignore(self):
+        kind, text, usage = _parse_gemini_event(json.dumps({"type": "ping"}))
+        assert kind == "ignore"
+
+    def test_text_event(self):
+        event = json.dumps({"type": "text", "content": "Hello from Gemini"})
+        kind, text, usage = _parse_gemini_event(event)
+        assert kind == "text"
+        assert text == "Hello from Gemini"
+
+    def test_tool_call_event(self):
+        event = json.dumps({"type": "tool_call", "name": "read_file"})
+        kind, text, usage = _parse_gemini_event(event)
+        assert kind == "tool_use"
+        assert "read_file" in text
+
+    def test_result_event_with_usage(self):
+        event = json.dumps({
+            "type": "result",
+            "text": "Done.",
+            "usage": {"input_tokens": 100, "output_tokens": 50, "cost_usd": 0.01},
+        })
+        kind, text, usage = _parse_gemini_event(event)
+        assert kind == "result"
+        assert text == "Done."
+        assert usage["input_tokens"] == 100
+        assert usage["output_tokens"] == 50
+        assert usage["cost_usd"] == 0.01
+
+    def test_result_event_without_usage(self):
+        event = json.dumps({"type": "result", "result": "Finished"})
+        kind, text, usage = _parse_gemini_event(event)
+        assert kind == "result"
+        assert text == "Finished"
+        assert usage is None
+
+    def test_error_event(self):
+        event = json.dumps({"type": "error", "message": "quota exceeded"})
+        kind, text, usage = _parse_gemini_event(event)
+        assert kind == "error"
+        assert text == "quota exceeded"
+
+
+# ---------------------------------------------------------------------------
+# _parse_codex_event
+# ---------------------------------------------------------------------------
+
+
+class TestParseCodexEvent:
+    def test_invalid_json_returns_ignore(self):
+        kind, text, usage = _parse_codex_event("garbage")
+        assert kind == "ignore"
+        assert text == ""
+        assert usage is None
+
+    def test_unknown_type_returns_ignore(self):
+        kind, text, usage = _parse_codex_event(json.dumps({"type": "heartbeat"}))
+        assert kind == "ignore"
+
+    def test_message_with_string_content(self):
+        event = json.dumps({"type": "message", "content": "Hello from Codex"})
+        kind, text, usage = _parse_codex_event(event)
+        assert kind == "text"
+        assert text == "Hello from Codex"
+
+    def test_message_with_list_content(self):
+        event = json.dumps({
+            "type": "message",
+            "content": [
+                {"type": "text", "text": "Part A. "},
+                {"type": "text", "text": "Part B."},
+                {"type": "image", "url": "http://x"},
+            ],
+        })
+        kind, text, usage = _parse_codex_event(event)
+        assert kind == "text"
+        assert text == "Part A. Part B."
+
+    def test_function_call_event(self):
+        event = json.dumps({"type": "function_call", "name": "bash"})
+        kind, text, usage = _parse_codex_event(event)
+        assert kind == "tool_use"
+        assert "bash" in text
+
+    def test_result_event(self):
+        event = json.dumps({
+            "type": "result",
+            "output": "All done.",
+            "usage": {"input_tokens": 200, "output_tokens": 80, "cost_usd": 0.05},
+        })
+        kind, text, usage = _parse_codex_event(event)
+        assert kind == "result"
+        assert text == "All done."
+        assert usage["input_tokens"] == 200
+        assert usage["cost_usd"] == 0.05
+
+    def test_completed_event(self):
+        event = json.dumps({"type": "completed", "result": "Finished"})
+        kind, text, usage = _parse_codex_event(event)
+        assert kind == "result"
+        assert text == "Finished"
+
+    def test_error_event(self):
+        event = json.dumps({"type": "error", "message": "model overloaded"})
+        kind, text, usage = _parse_codex_event(event)
+        assert kind == "error"
+        assert text == "model overloaded"
 
 
 # ---------------------------------------------------------------------------
@@ -1043,16 +1166,16 @@ class TestRunAgent:
     async def test_no_claude_cli_raises(self, mock_server, study_mgr, monkeypatch):
         # Create agent card
         info = await create_agent_card("reproduce", "s1", mock_server)
-        monkeypatch.setattr("vitrine.dispatch._find_claude", lambda: None)
-        with pytest.raises(ValueError, match="claude CLI not found"):
+        monkeypatch.setattr("vitrine.dispatch.shutil.which", lambda _b: None)
+        with pytest.raises(ValueError, match="not found in PATH"):
             await run_agent(info.card_id, mock_server)
 
     async def test_happy_path_spawns_process(self, mock_server, study_mgr, monkeypatch):
         info = await create_agent_card("reproduce", "s1", mock_server)
 
-        # Mock _find_claude and subprocess.Popen
+        # Mock shutil.which and subprocess.Popen
         monkeypatch.setattr(
-            "vitrine.dispatch._find_claude", lambda: "/usr/local/bin/claude"
+            "vitrine.dispatch.shutil.which", lambda _b: "/usr/local/bin/claude"
         )
 
         mock_proc = MagicMock(spec=subprocess.Popen)
