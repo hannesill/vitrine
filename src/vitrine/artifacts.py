@@ -515,6 +515,20 @@ class ArtifactStore:
                 return path.read_bytes()
         raise FileNotFoundError(f"No artifact found for card {card_id}")
 
+    def get_card(self, card_id: str) -> CardDescriptor | None:
+        """Look up a single card by ID without deserializing all cards.
+
+        Args:
+            card_id: The card ID to find.
+
+        Returns:
+            CardDescriptor if found, None otherwise.
+        """
+        for d in self._read_index():
+            if d["card_id"] == card_id:
+                return _deserialize_card(d)
+        return None
+
     def list_cards(self, study: str | None = None) -> list[CardDescriptor]:
         """List all card descriptors in insertion order.
 
