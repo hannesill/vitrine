@@ -31,7 +31,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from vitrine.server import DisplayServer
+    from vitrine._types import DispatchHost
     from vitrine.study_manager import StudyManager
 
 logger = logging.getLogger(__name__)
@@ -498,7 +498,7 @@ def _build_agent_preview(
 async def create_agent_card(
     task: str,
     study: str,
-    server: DisplayServer,
+    server: DispatchHost,
 ) -> DispatchInfo:
     """Create an AGENT card with config preview. Does not start the agent.
 
@@ -556,7 +556,7 @@ async def create_agent_card(
 async def _update_agent_card(
     card_id: str,
     study: str,
-    server: DisplayServer,
+    server: DispatchHost,
     preview_updates: dict[str, Any],
     title: str | None = None,
 ) -> None:
@@ -597,7 +597,7 @@ async def _update_agent_card(
 
 async def run_agent(
     card_id: str,
-    server: DisplayServer,
+    server: DispatchHost,
     config: dict[str, Any] | None = None,
 ) -> DispatchInfo:
     """Start the agent for an existing AGENT card.
@@ -607,7 +607,7 @@ async def run_agent(
 
     Args:
         card_id: ID of the AGENT card to run.
-        server: The DisplayServer instance.
+        server: The DispatchHost instance.
         config: Optional overrides (model, budget, additional_prompt).
     """
     _require_config()
@@ -886,7 +886,7 @@ def _cleanup_paper_workspace(paper_dir: Path, copied_items: list[str]) -> None:
     logger.info(f"Cleaned up paper workspace copies: {paper_dir}")
 
 
-async def _stream_monitor(info: DispatchInfo, server: DisplayServer) -> None:
+async def _stream_monitor(info: DispatchInfo, server: DispatchHost) -> None:
     """Parse stream-json events from the agent and update the card."""
     proc = info.process
     if proc is None or proc.stdout is None:
@@ -1062,7 +1062,7 @@ async def _stream_monitor(info: DispatchInfo, server: DisplayServer) -> None:
                 pass
 
 
-async def cancel_agent(card_id: str, server: DisplayServer) -> bool:
+async def cancel_agent(card_id: str, server: DispatchHost) -> bool:
     """Cancel a running agent by card_id."""
     info = server.dispatches.get(card_id)
     if info is None or info.status != "running":
@@ -1113,7 +1113,7 @@ async def cancel_agent(card_id: str, server: DisplayServer) -> bool:
     return True
 
 
-def get_agent_status(card_id: str, server: DisplayServer) -> dict[str, Any] | None:
+def get_agent_status(card_id: str, server: DispatchHost) -> dict[str, Any] | None:
     """Get the status of an agent by card_id."""
     info = server.dispatches.get(card_id)
     if info is None:
@@ -1133,7 +1133,7 @@ def get_agent_status(card_id: str, server: DisplayServer) -> dict[str, Any] | No
     }
 
 
-def reconcile_orphaned_agents(server: DisplayServer) -> int:
+def reconcile_orphaned_agents(server: DispatchHost) -> int:
     """Fix agent cards stuck in 'running' state with no backing process."""
     from vitrine._types import CardType
 
@@ -1160,7 +1160,7 @@ def reconcile_orphaned_agents(server: DisplayServer) -> int:
     return fixed
 
 
-def cleanup_dispatches(server: DisplayServer) -> None:
+def cleanup_dispatches(server: DispatchHost) -> None:
     """Terminate all running dispatches. Called on server shutdown."""
     for card_id, info in server.dispatches.items():
         if info.status == "running" and info.process is not None:
@@ -1194,7 +1194,7 @@ def _is_pid_alive(pid: int) -> bool:
 _WATCHDOG_INTERVAL = 30  # seconds
 
 
-async def _dispatch_watchdog(server: DisplayServer) -> None:
+async def _dispatch_watchdog(server: DispatchHost) -> None:
     """Periodic safety net: detect dead PIDs that the stream monitor missed."""
     while True:
         await asyncio.sleep(_WATCHDOG_INTERVAL)

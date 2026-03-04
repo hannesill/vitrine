@@ -1489,3 +1489,98 @@ class TestAgentEndpoints:
         client = TestClient(app)
         resp = client.delete("/api/agents/done123")
         assert resp.status_code == 404
+
+
+class TestEventQueueBounding:
+    """Test that the event queue truncates when it exceeds 1000 entries."""
+
+    def test_event_queue_truncates_above_1000(self, store):
+        """Fill queue to 1000 then add one more via _handle_general_event, verify truncation to 500."""
+        import asyncio
+
+        from vitrine.ws_handlers import _handle_general_event
+
+        srv = DisplayServer(
+            store=store,
+            port=7796,
+            host="127.0.0.1",
+            session_id="eq-test",
+        )
+
+        # Pre-fill queue to exactly 1000 entries
+        srv._event_queue = [
+            {"event_type": "row_click", "card_id": f"card-{i}", "payload": {}}
+            for i in range(1000)
+        ]
+        assert len(srv._event_queue) == 1000
+
+        # Adding one more via the real handler should trigger truncation
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(
+            _handle_general_event(srv, "row_click", "card-1000", {})
+        )
+        loop.close()
+
+        assert len(srv._event_queue) == 500
+        # Verify the kept entries are the most recent ones
+        assert srv._event_queue[0]["card_id"] == "card-501"
+        assert srv._event_queue[-1]["card_id"] == "card-1000"
+
+
+class TestConcurrentCardResponses:
+    """Test that two threads can resolve different futures concurrently."""
+
+    def test_concurrent_card_responses_from_threads(self, store):
+        """Two threads resolving different futures concurrently."""
+        import asyncio
+        import threading
+
+        srv = DisplayServer(
+            store=store,
+            port=7795,
+            host="127.0.0.1",
+            session_id="concurrent-test",
+        )
+
+        loop = asyncio.new_event_loop()
+        srv._loop = loop
+        results = {}
+
+        async def wait_and_resolve():
+            async def wait_card(card_id, key):
+                r = await srv.wait_for_response(card_id, timeout=5.0)
+                results[key] = r
+
+            task_a = asyncio.ensure_future(wait_card("conc-a", "a"))
+            task_b = asyncio.ensure_future(wait_card("conc-b", "b"))
+
+            await asyncio.sleep(0.1)
+
+            # Resolve from separate threads
+            def resolve_a():
+                loop.call_soon_threadsafe(
+                    srv._pending_responses["conc-a"].set_result,
+                    {"action": "confirm", "card_id": "conc-a"},
+                )
+
+            def resolve_b():
+                loop.call_soon_threadsafe(
+                    srv._pending_responses["conc-b"].set_result,
+                    {"action": "skip", "card_id": "conc-b"},
+                )
+
+            t1 = threading.Thread(target=resolve_a)
+            t2 = threading.Thread(target=resolve_b)
+            t1.start()
+            t2.start()
+            t1.join(timeout=5)
+            t2.join(timeout=5)
+
+            await task_a
+            await task_b
+
+        loop.run_until_complete(wait_and_resolve())
+        loop.close()
+
+        assert results["a"]["action"] == "confirm"
+        assert results["b"]["action"] == "skip"

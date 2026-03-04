@@ -1279,3 +1279,95 @@ class TestListAnnotations:
         assert result[0]["text"] == "note"
         assert result[0]["card_id"] == "card-ann"
         assert result[0]["card_title"] == "Card A"
+
+
+class TestPollRemoteResponse:
+    """Tests for _poll_remote_response."""
+
+    def test_poll_remote_response_success(self, monkeypatch):
+        """Mock successful HTTP response, verify parsed result."""
+        import io
+        import urllib.request
+
+        expected = {"action": "confirm", "card_id": "card-123", "message": "ok"}
+
+        class FakeResponse:
+            def read(self):
+                return json.dumps(expected).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        def fake_urlopen(req, timeout=None):
+            return FakeResponse()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        _st._remote_url = "http://localhost:9999"
+        _st._auth_token = "test-token"
+
+        result = _client_mod._poll_remote_response("card-123", timeout=30.0)
+        assert result["action"] == "confirm"
+        assert result["card_id"] == "card-123"
+
+
+class TestPollRemoteEvents:
+    """Tests for _poll_remote_events."""
+
+    def test_poll_remote_events_invokes_callbacks(self, monkeypatch):
+        """Mock events endpoint, verify callbacks fire."""
+        import urllib.request
+
+        events_payload = [
+            {"event_type": "row_click", "card_id": "c1", "payload": {"row": 0}},
+            {"event_type": "point_select", "card_id": "c2", "payload": {"points": [1]}},
+        ]
+
+        class FakeResponse:
+            def read(self):
+                return json.dumps(events_payload).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        call_count = 0
+
+        def fake_urlopen(req, timeout=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # Return events and immediately stop so only one batch fires
+                _st._event_poll_stop.set()
+                return FakeResponse()
+            return FakeResponse()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+        _st._remote_url = "http://localhost:9999"
+        _st._auth_token = "test-token"
+        _st._event_poll_stop.clear()
+
+        received = []
+
+        def on_event(evt):
+            received.append(evt)
+
+        _st._event_callbacks.append(on_event)
+
+        # Run the poll loop briefly — it will stop after first iteration
+        # because fake_urlopen sets the stop event on second call
+        import threading
+
+        t = threading.Thread(target=_client_mod._poll_remote_events, daemon=True)
+        t.start()
+        t.join(timeout=5)
+
+        assert len(received) == 2
+        assert received[0].event_type == "row_click"
+        assert received[0].card_id == "c1"
+        assert received[1].event_type == "point_select"

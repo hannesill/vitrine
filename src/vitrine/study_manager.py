@@ -469,9 +469,7 @@ class StudyManager:
             if card_id.startswith(prefix):
                 store = self._stores.get(dir_name)
                 if store:
-                    for card in store.list_cards():
-                        if card.card_id == card_id:
-                            return card
+                    return store.get_card(card_id)
         return None
 
     def get_dir_for_label(self, label: str) -> str | None:
@@ -505,8 +503,7 @@ class StudyManager:
                 "current_selections": {},
             }
 
-        store = self._stores.get(dir_name)
-        if store is None:
+        if dir_name not in self._stores:
             return {
                 "study": study,
                 "card_count": 0,
@@ -517,7 +514,8 @@ class StudyManager:
                 "current_selections": {},
             }
 
-        all_cards = store.list_cards()
+        # Filter the all-studies cache instead of reading from disk directly
+        all_cards = [c for c in self.list_all_cards() if c.study == study]
         # Exclude soft-deleted cards from context
         cards = [c for c in all_cards if not c.deleted]
         card_summaries = []
