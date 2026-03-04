@@ -18,11 +18,13 @@ import pytest
 
 from vitrine.export import (
     _format_cell,
+    _render_agent_html,
     export_html,
     export_html_string,
     export_json,
     export_json_bytes,
 )
+from vitrine._types import CardDescriptor, CardType
 from vitrine.renderer import render
 from vitrine.study_manager import StudyManager
 
@@ -277,3 +279,53 @@ class TestFormatCell:
 
     def test_int(self):
         assert _format_cell(42) == "42"
+
+
+# ================================================================
+# TestRenderAgentHtml
+# ================================================================
+
+
+class TestRenderAgentHtml:
+    def _make_card(self, card_id="agent-001", **preview_kwargs):
+        return CardDescriptor(
+            card_id=card_id,
+            card_type=CardType.AGENT,
+            title="Agent",
+            timestamp="2025-01-01T00:00:00Z",
+            preview=preview_kwargs,
+        )
+
+    def test_completed_status(self):
+        html = _render_agent_html(self._make_card(status="completed"))
+        assert "Completed" in html
+        assert "#16a34a" in html  # green color
+
+    def test_failed_status_with_error(self):
+        html = _render_agent_html(self._make_card(status="failed", error="bad input"))
+        assert "Failed" in html
+        assert "#dc2626" in html  # red color
+        assert "bad input" in html
+
+    def test_running_status(self):
+        html = _render_agent_html(self._make_card(status="running"))
+        assert "Running" in html
+        assert "#f97316" in html  # orange color
+
+    def test_error_only_shown_when_failed(self):
+        html = _render_agent_html(self._make_card(status="completed", error="ignored"))
+        assert "ignored" not in html
+
+    def test_markdown_output(self):
+        html = _render_agent_html(self._make_card(status="completed", output="**bold**"))
+        assert "markdown-export" in html
+        assert "**bold**" in html  # escaped in div
+        assert "marked.parse" in html  # script block
+
+    def test_duration_seconds(self):
+        html = _render_agent_html(self._make_card(status="completed", duration=42))
+        assert "42s" in html
+
+    def test_duration_minutes(self):
+        html = _render_agent_html(self._make_card(status="completed", duration=90))
+        assert "1m 30s" in html

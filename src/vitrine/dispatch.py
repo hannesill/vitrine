@@ -535,11 +535,11 @@ async def create_agent_card(
     if store:
         store.store_card(card)
         server.study_manager.register_card(
-            card_id, server.study_manager._label_to_dir.get(study, "")
+            card_id, server.study_manager.get_dir_for_label(study) or ""
         )
 
     # Broadcast to browser
-    await server._broadcast({"type": "display.add", "card": _serialize_card(card)})
+    await server.broadcast({"type": "display.add", "card": _serialize_card(card)})
 
     info = DispatchInfo(
         task=task,
@@ -547,7 +547,7 @@ async def create_agent_card(
         card_id=card_id,
         status="pending",
     )
-    server._dispatches[card_id] = info
+    server.dispatches[card_id] = info
 
     logger.info(f"Created agent card '{task}' for '{study}' (card={card_id})")
     return info
@@ -590,7 +590,7 @@ async def _update_agent_card(
     if stored_title is not None:
         card_data["title"] = stored_title
 
-    await server._broadcast(
+    await server.broadcast(
         {"type": "display.update", "card_id": card_id, "card": card_data}
     )
 
@@ -615,7 +615,7 @@ async def run_agent(
     if not server.study_manager:
         raise ValueError("No study manager available")
 
-    info = server._dispatches.get(card_id)
+    info = server.dispatches.get(card_id)
     if info is None:
         raise ValueError(f"No agent card found: {card_id}")
     if info.status != "pending":
@@ -624,7 +624,7 @@ async def run_agent(
         )
 
     # Check global concurrency limit
-    running = sum(1 for d in server._dispatches.values() if d.status == "running")
+    running = sum(1 for d in server.dispatches.values() if d.status == "running")
     if running >= _MAX_CONCURRENT:
         raise RuntimeError(f"Maximum {_MAX_CONCURRENT} concurrent agents reached")
 
@@ -740,7 +740,7 @@ async def run_agent(
     )
 
     # Broadcast started event (for toast)
-    await server._broadcast(
+    await server.broadcast(
         {
             "type": "agent.started",
             "study": info.study,
@@ -996,7 +996,7 @@ async def _stream_monitor(info: DispatchInfo, server: DisplayServer) -> None:
                 {"status": "completed", "output": display, "completed_at": completed_at, "duration": duration, "usage": usage},
                 title=card_title,
             )
-            await server._broadcast({"type": "agent.completed", "study": info.study, "task": info.task, "card_id": info.card_id})
+            await server.broadcast({"type": "agent.completed", "study": info.study, "task": info.task, "card_id": info.card_id})
         else:
             info.status = "failed"
             info.error = f"Process exited with code {returncode}"
@@ -1006,7 +1006,7 @@ async def _stream_monitor(info: DispatchInfo, server: DisplayServer) -> None:
                 {"status": "failed", "output": error_output, "completed_at": completed_at, "duration": duration, "error": info.error, "usage": usage},
                 title=card_title,
             )
-            await server._broadcast({"type": "agent.failed", "study": info.study, "task": info.task, "card_id": info.card_id, "error": info.error})
+            await server.broadcast({"type": "agent.failed", "study": info.study, "task": info.task, "card_id": info.card_id, "error": info.error})
 
     except asyncio.TimeoutError:
         try:
@@ -1029,7 +1029,7 @@ async def _stream_monitor(info: DispatchInfo, server: DisplayServer) -> None:
 
         timeout_output = accumulated + f"\n\n---\n**Timed out** after {_DISPATCH_TIMEOUT}s"
         await _update_agent_card(info.card_id, info.study, server, {"status": "failed", "output": timeout_output, "completed_at": completed_at, "duration": duration, "error": info.error, "usage": usage}, title=card_title)
-        await server._broadcast({"type": "agent.failed", "study": info.study, "task": info.task, "card_id": info.card_id, "error": info.error})
+        await server.broadcast({"type": "agent.failed", "study": info.study, "task": info.task, "card_id": info.card_id, "error": info.error})
 
     except Exception as e:
         info.status = "failed"
@@ -1064,7 +1064,7 @@ async def _stream_monitor(info: DispatchInfo, server: DisplayServer) -> None:
 
 async def cancel_agent(card_id: str, server: DisplayServer) -> bool:
     """Cancel a running agent by card_id."""
-    info = server._dispatches.get(card_id)
+    info = server.dispatches.get(card_id)
     if info is None or info.status != "running":
         return False
 
@@ -1109,13 +1109,13 @@ async def cancel_agent(card_id: str, server: DisplayServer) -> bool:
     else:
         cancel_output = "*Cancelled by user.*"
     await _update_agent_card(card_id, info.study, server, {"status": "failed", "output": cancel_output, "completed_at": completed_at, "duration": duration, "error": "Cancelled by user"}, title=card_title)
-    await server._broadcast({"type": "agent.failed", "study": info.study, "task": info.task, "card_id": card_id, "error": "Cancelled by user"})
+    await server.broadcast({"type": "agent.failed", "study": info.study, "task": info.task, "card_id": card_id, "error": "Cancelled by user"})
     return True
 
 
 def get_agent_status(card_id: str, server: DisplayServer) -> dict[str, Any] | None:
     """Get the status of an agent by card_id."""
-    info = server._dispatches.get(card_id)
+    info = server.dispatches.get(card_id)
     if info is None:
         return None
     return {
@@ -1147,7 +1147,7 @@ def reconcile_orphaned_agents(server: DisplayServer) -> int:
         status = card.preview.get("status", "pending") if card.preview else "pending"
         if status != "running":
             continue
-        if card.card_id in server._dispatches:
+        if card.card_id in server.dispatches:
             continue
         new_preview = dict(card.preview)
         new_preview["status"] = "failed"
@@ -1162,7 +1162,7 @@ def reconcile_orphaned_agents(server: DisplayServer) -> int:
 
 def cleanup_dispatches(server: DisplayServer) -> None:
     """Terminate all running dispatches. Called on server shutdown."""
-    for card_id, info in server._dispatches.items():
+    for card_id, info in server.dispatches.items():
         if info.status == "running" and info.process is not None:
             try:
                 info.process.terminate()
@@ -1181,7 +1181,7 @@ def cleanup_dispatches(server: DisplayServer) -> None:
                 os.unlink(tmp)
             except OSError:
                 pass
-    server._dispatches.clear()
+    server.dispatches.clear()
 
 
 def _is_pid_alive(pid: int) -> bool:
@@ -1198,7 +1198,7 @@ async def _dispatch_watchdog(server: DisplayServer) -> None:
     """Periodic safety net: detect dead PIDs that the stream monitor missed."""
     while True:
         await asyncio.sleep(_WATCHDOG_INTERVAL)
-        for info in list(server._dispatches.values()):
+        for info in list(server.dispatches.values()):
             if info.status != "running" or info.pid is None:
                 continue
             if _is_pid_alive(info.pid):
@@ -1218,5 +1218,5 @@ async def _dispatch_watchdog(server: DisplayServer) -> None:
             _, card_title, _ = config
             output = info.accumulated_output + "\n\n---\n**Error:** Process exited unexpectedly"
             await _update_agent_card(info.card_id, info.study, server, {"status": "failed", "output": output, "completed_at": completed_at, "duration": duration, "error": info.error}, title=card_title)
-            await server._broadcast({"type": "agent.failed", "study": info.study, "task": info.task, "card_id": info.card_id, "error": info.error})
+            await server.broadcast({"type": "agent.failed", "study": info.study, "task": info.task, "card_id": info.card_id, "error": info.error})
             logger.warning(f"Watchdog: agent {info.card_id} PID {info.pid} dead, marked failed")

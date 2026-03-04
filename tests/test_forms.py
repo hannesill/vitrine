@@ -16,6 +16,7 @@ import pandas as pd
 import pytest
 
 import vitrine as display
+import vitrine._state as _st
 from vitrine._types import (
     CardType,
     DisplayResponse,
@@ -47,32 +48,32 @@ def study_manager(tmp_path):
 @pytest.fixture(autouse=True)
 def reset_module_state():
     """Reset module-level state before each test."""
-    display._server = None
-    display._store = None
-    display._study_manager = None
-    display._current_study = None
-    display._session_id = None
-    display._remote_url = None
-    display._auth_token = None
-    display._event_callbacks.clear()
-    display._event_poll_thread = None
-    display._event_poll_stop.clear()
+    _st._server = None
+    _st._store = None
+    _st._study_manager = None
+
+    _st._session_id = None
+    _st._remote_url = None
+    _st._auth_token = None
+    _st._event_callbacks.clear()
+    _st._event_poll_thread = None
+    _st._event_poll_stop.clear()
     yield
-    if display._server is not None:
+    if _st._server is not None:
         try:
-            display._server.stop()
+            _st._server.stop()
         except Exception:
             pass
-    display._server = None
-    display._store = None
-    display._study_manager = None
-    display._current_study = None
-    display._session_id = None
-    display._remote_url = None
-    display._auth_token = None
-    display._event_callbacks.clear()
-    display._event_poll_thread = None
-    display._event_poll_stop.clear()
+    _st._server = None
+    _st._store = None
+    _st._study_manager = None
+
+    _st._session_id = None
+    _st._remote_url = None
+    _st._auth_token = None
+    _st._event_callbacks.clear()
+    _st._event_poll_thread = None
+    _st._event_poll_stop.clear()
 
 
 @pytest.fixture
@@ -107,9 +108,9 @@ def mock_server(store):
             pass
 
     mock = MockServer()
-    display._server = mock
-    display._store = store
-    display._session_id = "form-test"
+    _st._server = mock
+    _st._store = store
+    _st._session_id = "form-test"
     return mock
 
 

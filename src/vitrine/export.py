@@ -82,6 +82,48 @@ def export_html(
     return output_path
 
 
+def _build_json_zip(
+    zf: zipfile.ZipFile,
+    study_manager: StudyManager,
+    study: str | None,
+    cards: list[CardDescriptor],
+    studies: list[dict[str, Any]],
+) -> None:
+    """Write JSON export contents into an open ZipFile.
+
+    Shared logic for both export_json() (file) and export_json_bytes() (memory).
+    """
+    meta = {
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "format_version": "1.0",
+        "study": study,
+        "studies": studies,
+        "card_count": len(cards),
+    }
+    zf.writestr("meta.json", json.dumps(meta, indent=2, default=str))
+
+    card_dicts = [_serialize_card(c) for c in cards]
+    zf.writestr("cards.json", json.dumps(card_dicts, indent=2, default=str))
+
+    seen_artifacts: set[str] = set()
+    for card in cards:
+        if not card.artifact_id or card.artifact_id in seen_artifacts:
+            continue
+        seen_artifacts.add(card.artifact_id)
+
+        store = study_manager.get_store_for_card(card.card_id)
+        if not store:
+            continue
+
+        for ext in ("parquet", "json", "svg", "png"):
+            artifact_path = store._artifacts_dir / f"{card.artifact_id}.{ext}"
+            if artifact_path.exists():
+                arcname = f"artifacts/{card.artifact_id}.{ext}"
+                zf.write(artifact_path, arcname)
+
+    _add_output_files_to_zip(zf, study_manager, study, studies)
+
+
 def export_json(
     study_manager: StudyManager,
     output_path: str | Path,
@@ -113,39 +155,7 @@ def export_json(
         studies = [s for s in studies if s["label"] == study]
 
     with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        # Export metadata
-        meta = {
-            "exported_at": datetime.now(timezone.utc).isoformat(),
-            "format_version": "1.0",
-            "study": study,
-            "studies": studies,
-            "card_count": len(cards),
-        }
-        zf.writestr("meta.json", json.dumps(meta, indent=2, default=str))
-
-        # Card descriptors
-        card_dicts = [_serialize_card(c) for c in cards]
-        zf.writestr("cards.json", json.dumps(card_dicts, indent=2, default=str))
-
-        # Artifact files
-        seen_artifacts: set[str] = set()
-        for card in cards:
-            if not card.artifact_id or card.artifact_id in seen_artifacts:
-                continue
-            seen_artifacts.add(card.artifact_id)
-
-            store = study_manager.get_store_for_card(card.card_id)
-            if not store:
-                continue
-
-            for ext in ("parquet", "json", "svg", "png"):
-                artifact_path = store._artifacts_dir / f"{card.artifact_id}.{ext}"
-                if artifact_path.exists():
-                    arcname = f"artifacts/{card.artifact_id}.{ext}"
-                    zf.write(artifact_path, arcname)
-
-        # Output files
-        _add_output_files_to_zip(zf, study_manager, study, studies)
+        _build_json_zip(zf, study_manager, study, cards, studies)
 
     logger.debug(f"Exported JSON zip: {output_path} ({len(cards)} cards)")
     return output_path
@@ -191,36 +201,7 @@ def export_json_bytes(
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        meta = {
-            "exported_at": datetime.now(timezone.utc).isoformat(),
-            "format_version": "1.0",
-            "study": study,
-            "studies": studies,
-            "card_count": len(cards),
-        }
-        zf.writestr("meta.json", json.dumps(meta, indent=2, default=str))
-
-        card_dicts = [_serialize_card(c) for c in cards]
-        zf.writestr("cards.json", json.dumps(card_dicts, indent=2, default=str))
-
-        seen_artifacts: set[str] = set()
-        for card in cards:
-            if not card.artifact_id or card.artifact_id in seen_artifacts:
-                continue
-            seen_artifacts.add(card.artifact_id)
-
-            store = study_manager.get_store_for_card(card.card_id)
-            if not store:
-                continue
-
-            for ext in ("parquet", "json", "svg", "png"):
-                artifact_path = store._artifacts_dir / f"{card.artifact_id}.{ext}"
-                if artifact_path.exists():
-                    arcname = f"artifacts/{card.artifact_id}.{ext}"
-                    zf.write(artifact_path, arcname)
-
-        # Output files
-        _add_output_files_to_zip(zf, study_manager, study, studies)
+        _build_json_zip(zf, study_manager, study, cards, studies)
 
     return buf.getvalue()
 
@@ -340,7 +321,7 @@ def _build_html_document(
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Mono:wght@400;500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-{_EXPORT_CSS}
+{_get_export_css()}
 {f"<script>{plotly_js}</script>" if plotly_js else ""}
 {f"<script>{marked_js}</script>" if marked_js else ""}
 </head>
@@ -968,503 +949,17 @@ def _format_cell(value: Any) -> str:
 
 # --- CSS for Export ---
 
-_EXPORT_CSS = """<style>
-  :root {
-    --bg: #f7f5f0;
-    --card-bg: #ffffff;
-    --text: #1a1a1a;
-    --text-muted: #888888;
-    --border: #1a1a1a;
-    --border-width: 2px;
-    --table-color: #3b82f6;
-    --table-bg: #dbeafe;
-    --md-color: #8b5cf6;
-    --md-bg: #ede9fe;
-    --chart-color: #f97316;
-    --chart-bg: #fff7ed;
-    --kv-color: #f59e0b;
-    --kv-bg: #fef3c7;
-    --form-color: #ec4899;
-    --form-bg: #fce7f3;
-    --decision-color: #ef4444;
-    --decision-bg: #fee2e2;
-    --image-color: #06b6d4;
-    --image-bg: #cffafe;
-    --agent-color: #6b7280;
-    --agent-bg: #f3f4f6;
-    --success: #16a34a;
-    --success-bg: #dcfce7;
-    --shadow: 4px 4px 0 #1a1a1a;
-    --shadow-sm: 2px 2px 0 #1a1a1a;
-    --font-head: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-mono: 'DM Mono', 'SF Mono', Menlo, Consolas, monospace;
-    --radius: 0px;
-  }
-
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-
-  body {
-    font-family: var(--font-body);
-    background: var(--bg);
-    color: var(--text);
-    line-height: 1.5;
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 0 24px;
-  }
-
-  .export-header {
-    padding: 20px 0;
-    border-bottom: 3px solid var(--border);
-    margin-bottom: 20px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    font-family: var(--font-head);
-  }
-
-  .export-header h1 {
-    font-size: 18px;
-    font-weight: 700;
-  }
-
-  .export-study-info {
-    font-size: 13px;
-    color: var(--text-muted);
-    margin-top: 4px;
-  }
-
-  .export-timestamp {
-    font-size: 12px;
-    color: var(--text-muted);
-  }
-
-  .feed {
-    padding-bottom: 40px;
-  }
-
-  .card {
-    background: var(--card-bg);
-    border: var(--border-width) solid var(--border);
-    border-radius: var(--radius);
-    margin-bottom: 16px;
-    box-shadow: var(--shadow);
-    overflow: hidden;
-    page-break-inside: avoid;
-  }
-
-  .card.dismissed { opacity: 0.5; }
-
-  .card-header {
-    padding: 10px 14px;
-    border-bottom: var(--border-width) solid var(--border);
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-
-  .card-header[data-type="table"] { background: var(--table-bg); }
-  .card-header[data-type="markdown"] { background: var(--md-bg); }
-  .card-header[data-type="plotly"] { background: var(--chart-bg); }
-  .card-header[data-type="image"] { background: var(--image-bg); }
-  .card-header[data-type="keyvalue"] { background: var(--kv-bg); }
-  .card-header[data-type="decision"] { background: var(--decision-bg); }
-  .card-header[data-type="agent"] { background: var(--agent-bg); }
-
-  .card-type-icon {
-    width: 28px;
-    height: 28px;
-    border: var(--border-width) solid var(--border);
-    border-radius: var(--radius);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-family: var(--font-head);
-    font-size: 14px;
-    font-weight: 700;
-    flex-shrink: 0;
-  }
-
-  .card-type-icon[data-type="table"] { background: var(--table-color); color: #fff; }
-  .card-type-icon[data-type="markdown"] { background: var(--md-color); color: #fff; }
-  .card-type-icon[data-type="plotly"] { background: var(--chart-color); color: #fff; }
-  .card-type-icon[data-type="image"] { background: var(--image-color); color: #fff; }
-  .card-type-icon[data-type="keyvalue"] { background: var(--kv-color); color: #fff; }
-  .card-type-icon[data-type="decision"] { background: var(--decision-color); color: #fff; }
-  .card-type-icon[data-type="agent"] { background: var(--agent-color); color: #fff; }
-
-  .card.responded .card-header { background: var(--success-bg); }
-  .card.responded .card-type-icon { background: var(--success); color: #fff; }
-
-  .card-title {
-    font-family: var(--font-head);
-    font-weight: 700;
-    font-size: 14px;
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .card-meta {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--text-muted);
-    white-space: nowrap;
-  }
-
-  .card-description {
-    font-size: 12px;
-    color: var(--text-muted);
-    padding: 6px 14px 0;
-  }
-
-  .card-body {
-    padding: 16px;
-  }
-
-  .card-annotations {
-    border-top: 1px solid color-mix(in srgb, var(--border) 30%, transparent);
-  }
-
-  .card-annotation {
-    padding: 8px 14px;
-    border-bottom: 1px solid color-mix(in srgb, var(--border) 15%, transparent);
-  }
-
-  .card-annotation:last-child {
-    border-bottom: none;
-  }
-
-  .annotation-text {
-    font-size: 13px;
-    color: var(--text);
-    line-height: 1.5;
-    white-space: pre-wrap;
-  }
-
-  .annotation-meta {
-    font-size: 10px;
-    color: var(--text-muted);
-    margin-top: 4px;
-    font-family: var(--font-mono);
-  }
-
-  .card-provenance {
-    padding: 6px 14px;
-    font-size: 10px;
-    color: var(--text-muted);
-    border-top: 1px solid color-mix(in srgb, var(--border) 30%, transparent);
-    font-family: var(--font-mono);
-  }
-
-  /* Tables */
-  .table-info {
-    font-size: 12px;
-    font-family: var(--font-head);
-    color: var(--text-muted);
-    padding: 10px 14px;
-    border-top: var(--border-width) solid var(--border);
-  }
-
-  .table-wrapper {
-    overflow-x: auto;
-    max-height: 600px;
-    overflow-y: auto;
-  }
-
-  .table-wrapper table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 12px;
-    font-family: var(--font-mono);
-  }
-
-  .table-wrapper th {
-    background: var(--table-bg);
-    position: sticky;
-    top: 0;
-    padding: 8px 14px;
-    text-align: left;
-    font-family: var(--font-head);
-    font-weight: 700;
-    border-bottom: var(--border-width) solid var(--border);
-    white-space: nowrap;
-  }
-
-  .table-wrapper td {
-    padding: 6px 14px;
-    border-bottom: 1px solid color-mix(in srgb, var(--border) 20%, transparent);
-    white-space: nowrap;
-    max-width: 300px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .table-wrapper tr:hover td { background: var(--table-bg); }
-
-  /* Key-Value */
-  .kv-table {
-    width: auto;
-  }
-
-  .kv-key {
-    font-family: var(--font-head);
-    font-weight: 700;
-    padding-right: 24px;
-    white-space: nowrap;
-    color: var(--text-muted);
-    font-size: 12px;
-  }
-
-  .kv-value {
-    font-family: var(--font-mono);
-  }
-
-  /* Plotly */
-  .plotly-export-container {
-    width: 100%;
-    min-height: 300px;
-  }
-
-  /* Images */
-  .image-container {
-    text-align: center;
-  }
-
-  .image-container img {
-    max-width: 100%;
-    height: auto;
-  }
-
-  /* Markdown */
-  .markdown-export {
-    font-family: var(--font-body);
-    font-size: 14px;
-    line-height: 1.7;
-  }
-
-  .markdown-export h1, .markdown-export h2, .markdown-export h3 {
-    margin: 16px 0 8px;
-    font-family: var(--font-head);
-    font-weight: 700;
-  }
-
-  .markdown-export p { margin: 6px 0; }
-
-  .markdown-export pre {
-    background: var(--bg);
-    border: var(--border-width) solid var(--border);
-    box-shadow: var(--shadow-sm);
-    padding: 12px 16px;
-    overflow-x: auto;
-    font-family: var(--font-mono);
-    font-size: 12px;
-  }
-
-  .markdown-export code {
-    font-family: var(--font-mono);
-    font-size: 0.9em;
-    background: var(--md-bg);
-    padding: 1px 4px;
-    border: 1px solid color-mix(in srgb, var(--border) 20%, transparent);
-  }
-
-  .markdown-export pre code {
-    background: none;
-    padding: 0;
-    border: none;
-  }
-
-  /* Frozen form (decision summary) */
-  .form-frozen {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px 16px;
-    font-size: 13px;
-  }
-
-  .form-frozen-item {
-    display: inline-flex;
-    flex-wrap: wrap;
-    gap: 4px;
-  }
-
-  .form-frozen-item .frozen-label {
-    color: var(--text-muted);
-  }
-
-  .form-frozen-item .frozen-value {
-    font-weight: 500;
-  }
-
-  .form-frozen-item .frozen-desc {
-    display: block;
-    font-size: 11px;
-    color: var(--text-muted);
-    font-weight: 400;
-    margin-top: 1px;
-  }
-
-  /* Section dividers */
-  .section-divider {
-    font-size: 13px;
-    font-family: var(--font-head);
-    font-weight: 700;
-    color: var(--text);
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 8px 0;
-    cursor: pointer;
-    user-select: none;
-  }
-
-  .section-divider:hover { opacity: 0.7; }
-
-  .section-chevron {
-    font-size: 9px;
-    transition: transform 0.15s;
-    flex-shrink: 0;
-    line-height: 1;
-  }
-
-  .section-collapsed .section-chevron {
-    transform: rotate(-90deg);
-  }
-
-  .hidden-by-section { display: none; }
-
-  .section-divider::before,
-  .section-divider::after {
-    content: '';
-    flex: 1;
-    height: 3px;
-    background: var(--border);
-  }
-
-  /* Study separators */
-  .study-separator {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    font-size: 12px;
-    font-family: var(--font-head);
-    font-weight: 700;
-    color: var(--text-muted);
-    padding: 20px 0 8px;
-  }
-
-  .study-separator::after {
-    content: '';
-    flex: 1;
-    height: 2px;
-    background: var(--border);
-  }
-
-  /* Research files section */
-  .export-file-entry {
-    padding: 8px 0;
-    border-bottom: 1px solid color-mix(in srgb, var(--border) 20%, transparent);
-  }
-
-  .export-file-entry:last-child {
-    border-bottom: none;
-  }
-
-  .export-file-name {
-    font-family: var(--font-mono);
-    font-size: 13px;
-    font-weight: 600;
-    margin-bottom: 4px;
-  }
-
-  .export-file-meta {
-    font-weight: 400;
-    font-size: 11px;
-    color: var(--text-muted);
-    margin-left: 8px;
-  }
-
-  .export-file-code {
-    background: var(--bg);
-    border: var(--border-width) solid var(--border);
-    box-shadow: var(--shadow-sm);
-    padding: 10px 14px;
-    overflow-x: auto;
-    font-family: var(--font-mono);
-    font-size: 11px;
-    line-height: 1.5;
-    max-height: 400px;
-    overflow-y: auto;
-    margin: 4px 0;
-  }
-
-  .empty-state {
-    text-align: center;
-    color: var(--text-muted);
-    padding: 60px 0;
-    font-size: 14px;
-  }
-
-  .export-footer {
-    text-align: center;
-    font-size: 11px;
-    font-family: var(--font-mono);
-    color: var(--text-muted);
-    padding: 24px 0;
-    border-top: 3px solid var(--border);
-  }
-
-  /* Print styles */
-  @media print {
-    body {
-      max-width: none;
-      padding: 0;
-      font-size: 10pt;
-    }
-
-    .export-header {
-      padding: 10px 0;
-      margin-bottom: 10px;
-    }
-
-    .card {
-      box-shadow: none;
-      border: 1px solid #999;
-      margin-bottom: 10px;
-      page-break-inside: avoid;
-    }
-
-    .card-header {
-      border-bottom: 1px solid #999;
-    }
-
-    .card-body { padding: 8px 12px; }
-
-    .table-wrapper {
-      max-height: none;
-      overflow: visible;
-    }
-
-    table { font-size: 9pt; }
-    th, td { padding: 3px 6px; }
-
-    .plotly-export-container {
-      min-height: 200px;
-    }
-
-    .export-footer {
-      position: fixed;
-      bottom: 0;
-      left: 0;
-      right: 0;
-      background: white;
-    }
-  }
-</style>"""
+_EXPORT_CSS_PATH = Path(__file__).parent / "export_styles.css"
+_export_css_cache: str | None = None
+
+
+def _get_export_css() -> str:
+    """Load and cache export CSS from the external file."""
+    global _export_css_cache
+    if _export_css_cache is None:
+        css = _EXPORT_CSS_PATH.read_text(encoding="utf-8")
+        _export_css_cache = f"<style>\n{css}</style>"
+    return _export_css_cache
 
 
 # --- JS for Export (minimal — just init Plotly charts and render markdown) ---

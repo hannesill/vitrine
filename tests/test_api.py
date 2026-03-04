@@ -22,6 +22,8 @@ import pandas as pd
 import pytest
 
 import vitrine as display
+import vitrine._state as _st
+import vitrine.client as _client_mod
 from vitrine._types import CardType, DisplayResponse
 from vitrine.artifacts import ArtifactStore
 from vitrine.study_manager import StudyManager
@@ -30,33 +32,33 @@ from vitrine.study_manager import StudyManager
 @pytest.fixture(autouse=True)
 def reset_module_state():
     """Reset module-level state before each test."""
-    display._server = None
-    display._store = None
-    display._study_manager = None
-    display._current_study = None
-    display._session_id = None
-    display._remote_url = None
-    display._auth_token = None
-    display._event_callbacks.clear()
-    display._event_poll_thread = None
-    display._event_poll_stop.clear()
+    _st._server = None
+    _st._store = None
+    _st._study_manager = None
+
+    _st._session_id = None
+    _st._remote_url = None
+    _st._auth_token = None
+    _st._event_callbacks.clear()
+    _st._event_poll_thread = None
+    _st._event_poll_stop.clear()
     yield
     # Clean up
-    if display._server is not None:
+    if _st._server is not None:
         try:
-            display._server.stop()
+            _st._server.stop()
         except Exception:
             pass
-    display._server = None
-    display._store = None
-    display._study_manager = None
-    display._current_study = None
-    display._session_id = None
-    display._remote_url = None
-    display._auth_token = None
-    display._event_callbacks.clear()
-    display._event_poll_thread = None
-    display._event_poll_stop.clear()
+    _st._server = None
+    _st._store = None
+    _st._study_manager = None
+
+    _st._session_id = None
+    _st._remote_url = None
+    _st._auth_token = None
+    _st._event_callbacks.clear()
+    _st._event_poll_thread = None
+    _st._event_poll_stop.clear()
 
 
 @pytest.fixture
@@ -64,8 +66,8 @@ def store(tmp_path):
     """Create a store and inject it into the module state."""
     session_dir = tmp_path / "api_session"
     store = ArtifactStore(session_dir=session_dir, session_id="api-test")
-    display._store = store
-    display._session_id = "api-test"
+    _st._store = store
+    _st._session_id = "api-test"
     return store
 
 
@@ -75,8 +77,8 @@ def study_manager(tmp_path):
     display_dir = tmp_path / "display"
     display_dir.mkdir()
     mgr = StudyManager(display_dir)
-    display._study_manager = mgr
-    display._session_id = "rm-test"
+    _st._study_manager = mgr
+    _st._session_id = "rm-test"
     return mgr
 
 
@@ -116,7 +118,7 @@ def mock_server(store, monkeypatch):
             self.event_callbacks.append(callback)
 
     mock = MockServer()
-    display._server = mock
+    _st._server = mock
     return mock
 
 
@@ -211,10 +213,10 @@ class TestReplace:
 
 class TestModuleState:
     def test_initial_state(self):
-        assert display._server is None
-        assert display._store is None
-        assert display._remote_url is None
-        assert display._auth_token is None
+        assert _st._server is None
+        assert _st._store is None
+        assert _st._remote_url is None
+        assert _st._auth_token is None
 
     def test_stop_when_not_started(self):
         # Should not raise
@@ -225,9 +227,9 @@ class TestDiscovery:
     def test_discover_no_pid_file(self, monkeypatch, tmp_path):
         """Discovery returns None when no PID file exists."""
         monkeypatch.setattr(
-            display, "_pid_file_path", lambda: tmp_path / ".server.json"
+            _client_mod, "_pid_file_path", lambda: tmp_path / ".server.json"
         )
-        result = display._discover_server()
+        result = _client_mod._discover_server()
         assert result is None
 
     def test_discover_stale_pid(self, monkeypatch, tmp_path):
@@ -245,10 +247,10 @@ class TestDiscovery:
                 }
             )
         )
-        monkeypatch.setattr(display, "_pid_file_path", lambda: pid_path)
-        monkeypatch.setattr(display, "_is_process_alive", lambda pid: False)
+        monkeypatch.setattr(_client_mod, "_pid_file_path", lambda: pid_path)
+        monkeypatch.setattr(_client_mod, "_is_process_alive", lambda pid: False)
 
-        result = display._discover_server()
+        result = _client_mod._discover_server()
         assert result is None
         assert not pid_path.exists()
 
@@ -269,11 +271,11 @@ class TestDiscovery:
                 }
             )
         )
-        monkeypatch.setattr(display, "_pid_file_path", lambda: pid_path)
-        monkeypatch.setattr(display, "_is_process_alive", lambda pid: True)
-        monkeypatch.setattr(display, "_health_check", lambda url, sid: False)
+        monkeypatch.setattr(_client_mod, "_pid_file_path", lambda: pid_path)
+        monkeypatch.setattr(_client_mod, "_is_process_alive", lambda pid: True)
+        monkeypatch.setattr(_client_mod, "_health_check", lambda url, sid: False)
 
-        result = display._discover_server()
+        result = _client_mod._discover_server()
         assert result is None
 
     def test_discover_valid_server(self, monkeypatch, tmp_path):
@@ -290,11 +292,11 @@ class TestDiscovery:
         }
         pid_path = tmp_path / ".server.json"
         pid_path.write_text(json.dumps(info))
-        monkeypatch.setattr(display, "_pid_file_path", lambda: pid_path)
-        monkeypatch.setattr(display, "_is_process_alive", lambda pid: True)
-        monkeypatch.setattr(display, "_health_check", lambda url, sid: True)
+        monkeypatch.setattr(_client_mod, "_pid_file_path", lambda: pid_path)
+        monkeypatch.setattr(_client_mod, "_is_process_alive", lambda pid: True)
+        monkeypatch.setattr(_client_mod, "_health_check", lambda url, sid: True)
 
-        result = display._discover_server()
+        result = _client_mod._discover_server()
         assert result is not None
         assert result["session_id"] == "valid-session"
         assert result["token"] == "secret-tok"
@@ -303,16 +305,16 @@ class TestDiscovery:
         """Current process should be alive."""
         import os
 
-        assert display._is_process_alive(os.getpid()) is True
+        assert _client_mod._is_process_alive(os.getpid()) is True
 
     def test_is_process_alive_dead_pid(self):
         """Non-existent PID should not be alive."""
-        assert display._is_process_alive(999999999) is False
+        assert _client_mod._is_process_alive(999999999) is False
 
     def test_server_status_returns_none(self, monkeypatch, tmp_path):
         """server_status() returns None when no server running."""
         monkeypatch.setattr(
-            display, "_pid_file_path", lambda: tmp_path / ".server.json"
+            _client_mod, "_pid_file_path", lambda: tmp_path / ".server.json"
         )
         assert display.server_status() is None
 
@@ -320,7 +322,7 @@ class TestDiscovery:
 class TestServerLifecycle:
     def test_server_status_returns_none_without_pid_file(self, monkeypatch):
         """server_status() returns None when PID file is absent (no port scan)."""
-        monkeypatch.setattr(display, "_discover_server", lambda: None)
+        monkeypatch.setattr(_client_mod, "_discover_server", lambda: None)
         assert display.server_status() is None
 
     def test_stop_server_keeps_pid_file_when_shutdown_fails(
@@ -329,9 +331,9 @@ class TestServerLifecycle:
         """stop_server() should not remove PID metadata if server is still healthy."""
         pid_path = tmp_path / ".server.json"
         pid_path.write_text("{}")
-        monkeypatch.setattr(display, "_pid_file_path", lambda: pid_path)
+        monkeypatch.setattr(_client_mod, "_pid_file_path", lambda: pid_path)
         monkeypatch.setattr(
-            display,
+            _client_mod,
             "_discover_server",
             lambda: {
                 "url": "http://127.0.0.1:7741",
@@ -340,7 +342,7 @@ class TestServerLifecycle:
                 "pid": None,
             },
         )
-        monkeypatch.setattr(display, "_health_check", lambda url, sid: True)
+        monkeypatch.setattr(_client_mod, "_health_check", lambda url, sid: True)
 
         import urllib.request
 
@@ -356,9 +358,9 @@ class TestServerLifecycle:
         """stop_server() should clean up PID metadata once server stops."""
         pid_path = tmp_path / ".server.json"
         pid_path.write_text("{}")
-        monkeypatch.setattr(display, "_pid_file_path", lambda: pid_path)
+        monkeypatch.setattr(_client_mod, "_pid_file_path", lambda: pid_path)
         monkeypatch.setattr(
-            display,
+            _client_mod,
             "_discover_server",
             lambda: {
                 "url": "http://127.0.0.1:7741",
@@ -367,7 +369,7 @@ class TestServerLifecycle:
                 "pid": None,
             },
         )
-        monkeypatch.setattr(display, "_health_check", lambda url, sid: False)
+        monkeypatch.setattr(_client_mod, "_health_check", lambda url, sid: False)
 
         import urllib.request
 
@@ -386,9 +388,9 @@ class TestServerLifecycle:
     def test_stop_delegates_to_persistent_server_when_remote(self, monkeypatch):
         """stop() should stop the persistent server when connected remotely."""
         calls = []
-        display._remote_url = "http://127.0.0.1:7741"
+        _st._remote_url = "http://127.0.0.1:7741"
         monkeypatch.setattr(
-            display,
+            _client_mod,
             "stop_server",
             lambda: calls.append("called") or True,
         )
@@ -409,7 +411,7 @@ class TestServerLifecycle:
             return None
 
         monkeypatch.setattr(subprocess, "Popen", _fake_popen)
-        display._start_process(port=7749, open_browser=False)
+        _client_mod._start_process(port=7749, open_browser=False)
 
         assert captured["stdout"] is subprocess.DEVNULL
         assert captured["stderr"] is subprocess.DEVNULL
@@ -432,10 +434,10 @@ class TestClientMode:
             commands_sent.append((url, token, payload))
             return True
 
-        display._remote_url = "http://127.0.0.1:7741"
-        display._auth_token = "test-token"
-        monkeypatch.setattr(display, "_ensure_started", lambda **kw: None)
-        monkeypatch.setattr(display, "_remote_command", mock_remote_command)
+        _st._remote_url = "http://127.0.0.1:7741"
+        _st._auth_token = "test-token"
+        monkeypatch.setattr(_client_mod, "_ensure_started", lambda **kw: None)
+        monkeypatch.setattr(_client_mod, "_remote_command", mock_remote_command)
 
         card_id = display.show("hello")
         assert isinstance(card_id, str)
@@ -452,10 +454,10 @@ class TestClientMode:
             commands_sent.append(payload)
             return True
 
-        display._remote_url = "http://127.0.0.1:7741"
-        display._auth_token = "test-token"
-        monkeypatch.setattr(display, "_ensure_started", lambda **kw: None)
-        monkeypatch.setattr(display, "_remote_command", mock_remote_command)
+        _st._remote_url = "http://127.0.0.1:7741"
+        _st._auth_token = "test-token"
+        monkeypatch.setattr(_client_mod, "_ensure_started", lambda **kw: None)
+        monkeypatch.setattr(_client_mod, "_remote_command", mock_remote_command)
 
         display.section("Results", study="r1")
         assert len(commands_sent) == 1
@@ -648,7 +650,7 @@ class TestGetSelection:
 
     def test_get_selection_empty_without_server(self, monkeypatch):
         """get_selection returns empty DataFrame when no server available."""
-        monkeypatch.setattr(display, "_ensure_started", lambda **kw: None)
+        monkeypatch.setattr(_client_mod, "_ensure_started", lambda **kw: None)
         result = display.get_selection("anything")
         assert isinstance(result, pd.DataFrame)
         assert len(result) == 0
@@ -806,16 +808,16 @@ class TestErrorLogging:
         import logging
 
         # Set up remote mode
-        display._remote_url = "http://127.0.0.1:9999"
-        display._auth_token = "fake-token"
+        _st._remote_url = "http://127.0.0.1:9999"
+        _st._auth_token = "fake-token"
 
         # _remote_command always fails
-        monkeypatch.setattr(display, "_remote_command", lambda *a: False)
+        monkeypatch.setattr(_client_mod, "_remote_command", lambda *a: False)
         # _discover_server returns None (can't find server)
-        monkeypatch.setattr(display, "_discover_server", lambda: None)
+        monkeypatch.setattr(_client_mod, "_discover_server", lambda: None)
 
         with caplog.at_level(logging.WARNING, logger="vitrine"):
-            result = display._push_remote({"card_type": "markdown"})
+            result = _client_mod._push_remote({"card_type": "markdown"})
 
         assert result is False
         assert "re-discovery failed" in caplog.text
@@ -826,18 +828,18 @@ class TestErrorLogging:
         """_push_remote logs warning when retry after re-discovery fails."""
         import logging
 
-        display._remote_url = "http://127.0.0.1:9999"
-        display._auth_token = "fake-token"
+        _st._remote_url = "http://127.0.0.1:9999"
+        _st._auth_token = "fake-token"
 
-        monkeypatch.setattr(display, "_remote_command", lambda *a: False)
+        monkeypatch.setattr(_client_mod, "_remote_command", lambda *a: False)
         monkeypatch.setattr(
-            display,
+            _client_mod,
             "_discover_server",
             lambda: {"url": "http://127.0.0.1:9998", "token": "t"},
         )
 
         with caplog.at_level(logging.WARNING, logger="vitrine"):
-            result = display._push_remote({"card_type": "markdown"})
+            result = _client_mod._push_remote({"card_type": "markdown"})
 
         assert result is False
         assert "failed after re-discovery" in caplog.text
@@ -847,8 +849,8 @@ class TestErrorLogging:
         import logging
         import urllib.error
 
-        display._remote_url = "http://127.0.0.1:9999"
-        display._auth_token = "fake-token"
+        _st._remote_url = "http://127.0.0.1:9999"
+        _st._auth_token = "fake-token"
 
         def mock_urlopen(*a, **kw):
             raise urllib.error.HTTPError("http://x", 403, "Forbidden", {}, None)
@@ -856,7 +858,7 @@ class TestErrorLogging:
         monkeypatch.setattr("urllib.request.urlopen", mock_urlopen)
 
         with caplog.at_level(logging.WARNING, logger="vitrine"):
-            result = display._poll_remote_response("card-123", timeout=1.0)
+            result = _client_mod._poll_remote_response("card-123", timeout=1.0)
 
         assert result["action"] == "error"
         assert result["card_id"] == "card-123"
@@ -867,8 +869,8 @@ class TestErrorLogging:
         import logging
         import urllib.error
 
-        display._remote_url = "http://127.0.0.1:9999"
-        display._auth_token = "fake-token"
+        _st._remote_url = "http://127.0.0.1:9999"
+        _st._auth_token = "fake-token"
 
         def mock_urlopen(*a, **kw):
             raise urllib.error.URLError("Connection refused")
@@ -876,7 +878,7 @@ class TestErrorLogging:
         monkeypatch.setattr("urllib.request.urlopen", mock_urlopen)
 
         with caplog.at_level(logging.WARNING, logger="vitrine"):
-            result = display._poll_remote_response("card-456", timeout=1.0)
+            result = _client_mod._poll_remote_response("card-456", timeout=1.0)
 
         assert result["action"] == "error"
         assert result["card_id"] == "card-456"
@@ -887,9 +889,9 @@ class TestErrorLogging:
         import logging
 
         # Bypass _ensure_started and force remote path
-        monkeypatch.setattr(display, "_ensure_started", lambda **kw: None)
-        display._server = None
-        display._remote_url = "http://127.0.0.1:9999"
+        monkeypatch.setattr(_client_mod, "_ensure_started", lambda **kw: None)
+        _st._server = None
+        _st._remote_url = "http://127.0.0.1:9999"
 
         def mock_urlopen(*a, **kw):
             raise ConnectionError("refused")
@@ -911,8 +913,8 @@ class TestFileLocking:
 
     def test_lock_file_path(self, tmp_path, monkeypatch):
         """_lock_file_path returns correct path."""
-        monkeypatch.setattr(display, "_get_vitrine_dir", lambda: tmp_path / "vitrine")
-        path = display._lock_file_path()
+        monkeypatch.setattr(_client_mod, "_get_vitrine_dir", lambda: tmp_path / "vitrine")
+        path = _client_mod._lock_file_path()
         assert path == tmp_path / "vitrine" / ".server.lock"
 
 
@@ -1152,10 +1154,10 @@ class TestExportWrapper:
 
     def test_no_study_manager_raises(self, mock_server, monkeypatch):
         """export() raises RuntimeError when no study manager."""
-        display._study_manager = None
+        _st._study_manager = None
         # Prevent _ensure_study_manager from creating one
-        monkeypatch.setattr(display, "_ensure_study_manager", lambda: None)
-        assert display._study_manager is None
+        monkeypatch.setattr(_client_mod, "_ensure_study_manager", lambda: None)
+        assert _st._study_manager is None
 
     def test_html_export_via_export_html(self, study_manager, mock_server, tmp_path):
         """export_html() produces an HTML file."""
@@ -1189,3 +1191,91 @@ class TestAskTimeout:
         }
         result = display.ask("Which score?", ["SOFA", "APACHE III"])
         assert result == "timeout"
+
+
+# ================================================================
+# TestMigrateIfNeeded
+# ================================================================
+
+
+class TestMigrateIfNeeded:
+    def test_m4_data_dir_migration(self, tmp_path, monkeypatch):
+        """Moves legacy M4_DATA_DIR/vitrine/ to new vitrine_dir."""
+        m4_dir = tmp_path / "m4data"
+        old_vitrine = m4_dir / "vitrine"
+        old_vitrine.mkdir(parents=True)
+        (old_vitrine / "test.txt").write_text("data")
+
+        monkeypatch.setenv("M4_DATA_DIR", str(m4_dir))
+        vitrine_dir = tmp_path / ".vitrine"
+        _client_mod._migrate_if_needed(vitrine_dir)
+
+        assert vitrine_dir.exists()
+        assert (vitrine_dir / "test.txt").read_text() == "data"
+        assert not old_vitrine.exists()
+
+    def test_runs_to_studies_rename(self, tmp_path, monkeypatch):
+        """Renames runs/ -> studies/ inside vitrine_dir."""
+        monkeypatch.delenv("M4_DATA_DIR", raising=False)
+        vitrine_dir = tmp_path / ".vitrine"
+        runs_dir = vitrine_dir / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / "study1.json").write_text("{}")
+
+        _client_mod._migrate_if_needed(vitrine_dir)
+
+        assert not runs_dir.exists()
+        assert (vitrine_dir / "studies" / "study1.json").exists()
+
+    def test_legacy_json_cleanup(self, tmp_path, monkeypatch):
+        """Removes runs.json and studies.json from vitrine_dir."""
+        monkeypatch.delenv("M4_DATA_DIR", raising=False)
+        vitrine_dir = tmp_path / ".vitrine"
+        vitrine_dir.mkdir(parents=True)
+        (vitrine_dir / "runs.json").write_text("[]")
+        (vitrine_dir / "studies.json").write_text("[]")
+
+        _client_mod._migrate_if_needed(vitrine_dir)
+
+        assert not (vitrine_dir / "runs.json").exists()
+        assert not (vitrine_dir / "studies.json").exists()
+
+    def test_noop_when_nothing_to_migrate(self, tmp_path, monkeypatch):
+        """No errors when nothing exists."""
+        monkeypatch.delenv("M4_DATA_DIR", raising=False)
+        vitrine_dir = tmp_path / ".vitrine"
+        _client_mod._migrate_if_needed(vitrine_dir)
+        assert not vitrine_dir.exists()
+
+
+# ================================================================
+# TestListAnnotations
+# ================================================================
+
+
+class TestListAnnotations:
+    def test_empty_default(self, store, mock_server):
+        """Returns empty list when no annotations exist."""
+        result = display.list_annotations()
+        assert result == []
+
+    def test_returns_annotations(self, store, mock_server, monkeypatch):
+        """Returns annotations with card context."""
+        monkeypatch.setattr(_client_mod, "_ensure_study_manager", lambda: None)
+        from vitrine._types import CardDescriptor, CardType
+
+        ann = {"id": "ann-1", "text": "note", "timestamp": "2025-01-01T00:00:00Z"}
+        card = CardDescriptor(
+            card_id="card-ann",
+            card_type=CardType.MARKDOWN,
+            title="Card A",
+            timestamp="2025-01-01T00:00:00Z",
+            annotations=[ann],
+        )
+        store.store_card(card)
+
+        result = display.list_annotations()
+        assert len(result) == 1
+        assert result[0]["text"] == "note"
+        assert result[0]["card_id"] == "card-ann"
+        assert result[0]["card_title"] == "Card A"
