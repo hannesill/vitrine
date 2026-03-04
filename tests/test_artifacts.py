@@ -434,3 +434,77 @@ class TestSanitizeSearch:
     def test_allows_forward_slash(self):
         result = ArtifactStore._sanitize_search("ICD-10/A41")
         assert result == "ICD-10/A41"
+
+
+# ================================================================
+# TestTableStats
+# ================================================================
+
+
+class TestTableStats:
+    def test_basic_stats(self, store, sample_df):
+        """table_stats returns correct per-column stats."""
+        store.store_dataframe("card-stats", sample_df)
+        stats = store.table_stats("card-stats")
+
+        assert set(stats.keys()) == {"name", "age", "score"}
+
+        # Numeric columns have mean
+        assert "mean" in stats["age"]
+        assert "mean" in stats["score"]
+        # String column does not
+        assert "mean" not in stats["name"]
+
+        # Check age stats
+        assert stats["age"]["min"] == 25
+        assert stats["age"]["max"] == 35
+        assert stats["age"]["null_count"] == 0
+        assert stats["age"]["approx_unique"] >= 5
+
+    def test_null_handling(self, store):
+        """Null values are counted correctly."""
+        df = pd.DataFrame({"x": [1, 2, None, 4, None]})
+        store.store_dataframe("card-nulls", df)
+        stats = store.table_stats("card-nulls")
+        assert stats["x"]["null_count"] == 2
+
+    def test_missing_parquet_raises(self, store):
+        """FileNotFoundError when artifact does not exist."""
+        with pytest.raises(FileNotFoundError):
+            store.table_stats("nonexistent")
+
+
+# ================================================================
+# TestExportTableCsv
+# ================================================================
+
+
+class TestExportTableCsv:
+    def test_basic_csv(self, store, sample_df):
+        """export_table_csv returns valid CSV with all rows."""
+        store.store_dataframe("card-csv", sample_df)
+        csv_str = store.export_table_csv("card-csv")
+        lines = csv_str.strip().split("\n")
+        assert lines[0] == "name,age,score"
+        assert len(lines) == 6  # header + 5 data rows
+
+    def test_sort(self, store, sample_df):
+        """Sorted export orders rows correctly."""
+        store.store_dataframe("card-csv-sort", sample_df)
+        csv_str = store.export_table_csv("card-csv-sort", sort_col="age", sort_asc=True)
+        lines = csv_str.strip().split("\n")
+        ages = [line.split(",")[1] for line in lines[1:]]
+        assert ages == sorted(ages, key=int)
+
+    def test_search_filter(self, store, sample_df):
+        """Search filter reduces returned rows."""
+        store.store_dataframe("card-csv-search", sample_df)
+        csv_str = store.export_table_csv("card-csv-search", search="Alice")
+        lines = csv_str.strip().split("\n")
+        assert len(lines) == 2  # header + 1 match
+        assert "Alice" in lines[1]
+
+    def test_missing_parquet_raises(self, store):
+        """FileNotFoundError when artifact does not exist."""
+        with pytest.raises(FileNotFoundError):
+            store.export_table_csv("nonexistent")

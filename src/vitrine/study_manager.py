@@ -72,19 +72,41 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
     """Write JSON to a file atomically using a temporary file + rename.
 
     On POSIX, ``os.replace()`` is atomic, preventing partial writes if the
-    process crashes mid-write.
+    process crashes mid-write.  A file lock on a sidecar ``.lock`` file
+    prevents concurrent writers from interleaving.
     """
-    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    from vitrine._utils import lock_file, unlock_file
+
+    lock_path = path.with_suffix(".lock")
+    lock_fd = None
     try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp_path, str(path))
-    except BaseException:
+        lock_fd = open(lock_path, "w")
+        lock_file(lock_fd, exclusive=True, blocking=True)
+    except OSError:
+        # Lock acquisition failed (e.g. read-only filesystem) — proceed without
+        if lock_fd is not None:
+            lock_fd.close()
+        lock_fd = None
+
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
         try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp_path, str(path))
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    finally:
+        if lock_fd is not None:
+            try:
+                unlock_file(lock_fd)
+            except OSError:
+                pass
+            lock_fd.close()
 
 
 class StudyManager:
@@ -104,6 +126,7 @@ class StudyManager:
         self._stores: dict[str, ArtifactStore] = {}  # dir_name -> ArtifactStore
         self._label_to_dir: dict[str, str] = {}  # user_label -> dir_name
         self._card_index: dict[str, str] = {}  # card_id -> dir_name
+        self._all_cards_cache: list[CardDescriptor] | None = None
 
         # Discover existing studies from disk
         self._discover_studies()
@@ -154,6 +177,7 @@ class StudyManager:
         self._stores[dir_name] = store
         self._label_to_dir[study] = dir_name
 
+        self._all_cards_cache = None
         logger.debug(f"Created study '{study}' -> {dir_name}")
         return study, store
 
@@ -206,6 +230,7 @@ class StudyManager:
         for cid in to_remove:
             del self._card_index[cid]
 
+        self._all_cards_cache = None
         logger.debug(f"Deleted study '{study}' ({dir_name})")
         return True
 
@@ -399,7 +424,10 @@ class StudyManager:
                 return []
             return store.list_cards()
 
-        # All cards from all studies
+        # All cards from all studies (with cache)
+        if self._all_cards_cache is not None:
+            return list(self._all_cards_cache)
+
         all_cards: list[CardDescriptor] = []
         for dir_name in self._label_to_dir.values():
             store = self._stores.get(dir_name)
@@ -408,7 +436,8 @@ class StudyManager:
 
         # Sort by timestamp
         all_cards.sort(key=lambda c: c.timestamp or "")
-        return all_cards
+        self._all_cards_cache = all_cards
+        return list(all_cards)
 
     def get_store_for_card(self, card_id: str) -> ArtifactStore | None:
         """Look up which ArtifactStore contains a given card.
@@ -423,6 +452,31 @@ class StudyManager:
         if dir_name is not None:
             return self._stores.get(dir_name)
         return None
+
+    def get_card_by_prefix(self, prefix: str) -> CardDescriptor | None:
+        """Find a card by ID prefix using the card index.
+
+        Scans _card_index keys for a prefix match, then loads the card
+        from the matching store. Avoids loading all CardDescriptor objects.
+
+        Args:
+            prefix: Card ID prefix to match.
+
+        Returns:
+            CardDescriptor if found, None otherwise.
+        """
+        for card_id, dir_name in self._card_index.items():
+            if card_id.startswith(prefix):
+                store = self._stores.get(dir_name)
+                if store:
+                    for card in store.list_cards():
+                        if card.card_id == card_id:
+                            return card
+        return None
+
+    def get_dir_for_label(self, label: str) -> str | None:
+        """Return the directory name for a study label, or None if not found."""
+        return self._label_to_dir.get(label)
 
     def build_context(self, study: str) -> dict[str, Any]:
         """Build a structured context summary for agent re-orientation.
@@ -541,6 +595,7 @@ class StudyManager:
             dir_name: The study directory name containing this card.
         """
         self._card_index[card_id] = dir_name
+        self._all_cards_cache = None
 
     def store_selection(self, selection_id: str, rows: list, columns: list) -> Path:
         """Store a selection as a Parquet artifact in the vitrine-level dir.
@@ -723,29 +778,37 @@ class StudyManager:
         }
 
         files: list[dict[str, Any]] = []
-        for item in sorted(output_dir.rglob("*")):
-            if item.name.startswith("."):
-                continue
-            rel = str(item.relative_to(output_dir))
-            ext = item.suffix.lower()
-            ftype = _EXT_TYPES.get(ext, "other")
-            if item.is_dir():
-                ftype = "directory"
 
-            stat = item.stat()
-            files.append(
-                {
-                    "name": item.name,
-                    "path": rel,
-                    "size": stat.st_size if item.is_file() else 0,
-                    "modified": datetime.fromtimestamp(
-                        stat.st_mtime, tz=timezone.utc
-                    ).isoformat(),
-                    "type": ftype,
-                    "is_dir": item.is_dir(),
-                }
-            )
+        def _scan_dir(directory: Path, rel_prefix: str = "") -> None:
+            """Recursively scan using os.scandir (caches stat in DirEntry)."""
+            try:
+                entries = sorted(os.scandir(directory), key=lambda e: e.name)
+            except OSError:
+                return
+            for entry in entries:
+                if entry.name.startswith("."):
+                    continue
+                rel = f"{rel_prefix}{entry.name}" if not rel_prefix else f"{rel_prefix}/{entry.name}"
+                is_dir = entry.is_dir(follow_symlinks=False)
+                ext = os.path.splitext(entry.name)[1].lower()
+                ftype = "directory" if is_dir else _EXT_TYPES.get(ext, "other")
+                stat = entry.stat(follow_symlinks=False)
+                files.append(
+                    {
+                        "name": entry.name,
+                        "path": rel,
+                        "size": stat.st_size if not is_dir else 0,
+                        "modified": datetime.fromtimestamp(
+                            stat.st_mtime, tz=timezone.utc
+                        ).isoformat(),
+                        "type": ftype,
+                        "is_dir": is_dir,
+                    }
+                )
+                if is_dir:
+                    _scan_dir(Path(entry.path), rel)
 
+        _scan_dir(output_dir)
         return files
 
     def get_output_file_path(self, study_label: str, rel_path: str) -> Path | None:
@@ -787,7 +850,9 @@ class StudyManager:
 
         Only loads studies not already known in memory. Safe to call frequently
         (e.g. before listing studies) since it skips known directories.
+        Invalidates the all-cards cache so the next list_all_cards() rebuilds.
         """
+        self._all_cards_cache = None
         if not self._studies_dir.exists():
             return
 

@@ -67,8 +67,8 @@ def mock_server(study_mgr):
     """A minimal mock DisplayServer with study_manager and _dispatches."""
     server = MagicMock()
     server.study_manager = study_mgr
-    server._dispatches = {}
-    server._broadcast = AsyncMock()
+    server.dispatches = {}
+    server.broadcast = AsyncMock()
     return server
 
 
@@ -77,8 +77,8 @@ def mock_server_no_mgr():
     """A mock server with no study manager."""
     server = MagicMock()
     server.study_manager = None
-    server._dispatches = {}
-    server._broadcast = AsyncMock()
+    server.dispatches = {}
+    server.broadcast = AsyncMock()
     return server
 
 
@@ -655,15 +655,15 @@ class TestCreateAgentCard:
 
     async def test_card_broadcast(self, mock_server):
         await create_agent_card("reproduce", "test-study", mock_server)
-        mock_server._broadcast.assert_called_once()
-        call_args = mock_server._broadcast.call_args[0][0]
+        mock_server.broadcast.assert_called_once()
+        call_args = mock_server.broadcast.call_args[0][0]
         assert call_args["type"] == "display.add"
         assert call_args["card"]["card_type"] == "agent"
 
     async def test_dispatch_registered(self, mock_server):
         info = await create_agent_card("reproduce", "test-study", mock_server)
-        assert info.card_id in mock_server._dispatches
-        assert mock_server._dispatches[info.card_id] is info
+        assert info.card_id in mock_server.dispatches
+        assert mock_server.dispatches[info.card_id] is info
 
     async def test_unknown_task_raises(self, mock_server):
         with pytest.raises(ValueError, match="Unknown task"):
@@ -675,12 +675,12 @@ class TestCreateAgentCard:
 
     async def test_report_task_card_title(self, mock_server):
         await create_agent_card("report", "my-study", mock_server)
-        call_args = mock_server._broadcast.call_args[0][0]
+        call_args = mock_server.broadcast.call_args[0][0]
         assert call_args["card"]["title"] == "Study Report"
 
     async def test_reproduce_task_card_title(self, mock_server):
         await create_agent_card("reproduce", "my-study", mock_server)
-        call_args = mock_server._broadcast.call_args[0][0]
+        call_args = mock_server.broadcast.call_args[0][0]
         assert call_args["card"]["title"] == "Reproducibility Audit"
 
 
@@ -698,7 +698,7 @@ class TestCancelAgent:
         info = DispatchInfo(
             task="reproduce", study="s1", card_id="abc", status="completed"
         )
-        mock_server._dispatches["abc"] = info
+        mock_server.dispatches["abc"] = info
         result = await cancel_agent("abc", mock_server)
         assert result is False
 
@@ -728,7 +728,7 @@ class TestCancelAgent:
         )
         info.process = proc
         info.accumulated_output = "partial output"
-        mock_server._dispatches["abc"] = info
+        mock_server.dispatches["abc"] = info
 
         result = await cancel_agent("abc", mock_server)
         assert result is True
@@ -758,13 +758,13 @@ class TestCancelAgent:
         )
         info.process = MagicMock(spec=subprocess.Popen)
         info.accumulated_output = "## Progress\nStep 1 done."
-        mock_server._dispatches["abc"] = info
+        mock_server.dispatches["abc"] = info
 
         await cancel_agent("abc", mock_server)
 
         # Check broadcast includes preserved output
         update_call = None
-        for call in mock_server._broadcast.call_args_list:
+        for call in mock_server.broadcast.call_args_list:
             msg = call[0][0]
             if msg.get("type") == "display.update":
                 update_call = msg
@@ -798,7 +798,7 @@ class TestCancelAgent:
         )
         info.process = MagicMock(spec=subprocess.Popen)
         info.extra["sandbox"] = str(sandbox)
-        mock_server._dispatches["xyz"] = info
+        mock_server.dispatches["xyz"] = info
 
         await cancel_agent("xyz", mock_server)
         assert not sandbox.exists()
@@ -822,7 +822,7 @@ class TestGetAgentStatus:
             pid=12345,
             model="opus",
         )
-        mock_server._dispatches["abc"] = info
+        mock_server.dispatches["abc"] = info
         result = get_agent_status("abc", mock_server)
         assert result is not None
         assert result["status"] == "running"
@@ -906,7 +906,7 @@ class TestReconcileOrphanedAgents:
         )
         store.store_card(card)
         # Register a dispatch for this card
-        mock_server._dispatches["live1"] = DispatchInfo(
+        mock_server.dispatches["live1"] = DispatchInfo(
             task="reproduce", study="s1", card_id="live1", status="running"
         )
 
@@ -944,12 +944,12 @@ class TestCleanupDispatches:
             status="running",
         )
         info.process = proc
-        mock_server._dispatches["abc"] = info
+        mock_server.dispatches["abc"] = info
 
         cleanup_dispatches(mock_server)
         proc.terminate.assert_called_once()
         assert info.status == "cancelled"
-        assert len(mock_server._dispatches) == 0
+        assert len(mock_server.dispatches) == 0
 
     def test_skips_non_running(self, mock_server):
         info = DispatchInfo(
@@ -959,7 +959,7 @@ class TestCleanupDispatches:
             status="completed",
         )
         info.process = MagicMock(spec=subprocess.Popen)
-        mock_server._dispatches["abc"] = info
+        mock_server.dispatches["abc"] = info
 
         cleanup_dispatches(mock_server)
         info.process.terminate.assert_not_called()
@@ -973,20 +973,20 @@ class TestCleanupDispatches:
             task="reproduce", study="s1", card_id="abc", status="completed"
         )
         info.extra["sandbox"] = str(sandbox)
-        mock_server._dispatches["abc"] = info
+        mock_server.dispatches["abc"] = info
 
         cleanup_dispatches(mock_server)
         assert not sandbox.exists()
 
     def test_clears_dispatches_dict(self, mock_server):
-        mock_server._dispatches["a"] = DispatchInfo(
+        mock_server.dispatches["a"] = DispatchInfo(
             task="reproduce", study="s1", card_id="a", status="completed"
         )
-        mock_server._dispatches["b"] = DispatchInfo(
+        mock_server.dispatches["b"] = DispatchInfo(
             task="report", study="s2", card_id="b", status="failed"
         )
         cleanup_dispatches(mock_server)
-        assert len(mock_server._dispatches) == 0
+        assert len(mock_server.dispatches) == 0
 
     def test_handles_terminate_oserror(self, mock_server):
         """OSError from terminate is silently caught."""
@@ -996,7 +996,7 @@ class TestCleanupDispatches:
             task="reproduce", study="s1", card_id="abc", status="running"
         )
         info.process = proc
-        mock_server._dispatches["abc"] = info
+        mock_server.dispatches["abc"] = info
 
         cleanup_dispatches(mock_server)  # Should not raise
         assert info.status == "cancelled"
@@ -1099,8 +1099,8 @@ class TestUpdateAgentCard:
         assert updated.preview["model"] == "sonnet"  # Preserved
 
         # Verify broadcast was called
-        mock_server._broadcast.assert_called_once()
-        msg = mock_server._broadcast.call_args[0][0]
+        mock_server.broadcast.assert_called_once()
+        msg = mock_server.broadcast.call_args[0][0]
         assert msg["type"] == "display.update"
         assert msg["card_id"] == "upd1"
         assert msg["card"]["preview"]["status"] == "running"
@@ -1121,7 +1121,7 @@ class TestUpdateAgentCard:
             "upd2", "s1", mock_server, {"status": "running"}, title="New Title"
         )
 
-        msg = mock_server._broadcast.call_args[0][0]
+        msg = mock_server.broadcast.call_args[0][0]
         assert msg["card"]["title"] == "New Title"
 
 
@@ -1145,7 +1145,7 @@ class TestRunAgent:
         info = DispatchInfo(
             task="reproduce", study="s1", card_id="abc", status="completed"
         )
-        mock_server._dispatches["abc"] = info
+        mock_server.dispatches["abc"] = info
         with pytest.raises(RuntimeError, match="not pending"):
             await run_agent("abc", mock_server)
 
@@ -1153,11 +1153,11 @@ class TestRunAgent:
         # Fill up to max concurrent (5)
         for i in range(5):
             cid = f"run{i}"
-            mock_server._dispatches[cid] = DispatchInfo(
+            mock_server.dispatches[cid] = DispatchInfo(
                 task="reproduce", study="s1", card_id=cid, status="running"
             )
         # Add the pending card
-        mock_server._dispatches["pending1"] = DispatchInfo(
+        mock_server.dispatches["pending1"] = DispatchInfo(
             task="reproduce", study="s1", card_id="pending1", status="pending"
         )
         with pytest.raises(RuntimeError, match="Maximum"):
@@ -1263,7 +1263,7 @@ class TestStreamMonitor:
         assert info.completed_at is not None
         # Should have broadcast agent.completed
         broadcast_types = [
-            call[0][0]["type"] for call in mock_server._broadcast.call_args_list
+            call[0][0]["type"] for call in mock_server.broadcast.call_args_list
         ]
         assert "agent.completed" in broadcast_types
 
@@ -1303,7 +1303,7 @@ class TestStreamMonitor:
         assert info.status == "failed"
         assert "exit" in info.error.lower()
         broadcast_types = [
-            call[0][0]["type"] for call in mock_server._broadcast.call_args_list
+            call[0][0]["type"] for call in mock_server.broadcast.call_args_list
         ]
         assert "agent.failed" in broadcast_types
 
@@ -1330,7 +1330,7 @@ class TestPaperTask:
 
     async def test_paper_task_card_title(self, mock_server):
         await create_agent_card("paper", "my-study", mock_server)
-        call_args = mock_server._broadcast.call_args[0][0]
+        call_args = mock_server.broadcast.call_args[0][0]
         assert call_args["card"]["title"] == "Paper Draft"
 
 
