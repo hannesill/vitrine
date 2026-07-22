@@ -12,8 +12,11 @@ Usage:
 
 from __future__ import annotations
 
+import importlib.metadata
+import json
 import sys
 import time
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -24,6 +27,14 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+
+EXIT_SUCCESS = 0
+EXIT_FAILURE = 1
+EXIT_NOT_RUNNING = 3
+
+
+class _StartFailure(RuntimeError):
+    """Raised when a background server does not become healthy."""
 
 
 def _info(msg: str) -> None:
@@ -38,26 +49,89 @@ def _error(msg: str) -> None:
     console.print(f"[red]\u2717[/red] {msg}")
 
 
+def _package_version() -> str:
+    """Return the installed Vitrine package version."""
+    try:
+        return importlib.metadata.version("vitrine")
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
+
+
+def _lifecycle_payload(
+    status: str,
+    info: dict[str, Any] | None = None,
+    *,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """Build the stable machine-readable lifecycle response."""
+    from vitrine._utils import get_vitrine_dir
+
+    info = info or {}
+    api_url = info.get("api_url")
+    port = info.get("port")
+    if not api_url and port:
+        api_url = f"http://{info.get('host', '127.0.0.1')}:{port}"
+
+    return {
+        "status": status,
+        "url": info.get("url"),
+        "api_url": api_url,
+        "pid": info.get("pid"),
+        "port": port,
+        "session_id": info.get("session_id"),
+        "data_dir": str(get_vitrine_dir().resolve()),
+        "version": _package_version(),
+        "error": error,
+    }
+
+
+def _emit_json(payload: dict[str, Any]) -> None:
+    """Write one compact JSON object to stdout."""
+    typer.echo(json.dumps(payload, separators=(",", ":")))
+
+
 @app.command()
 def restart(
     port: int = typer.Option(7741, "--port", "-p", help="Port to bind to."),
     no_open: bool = typer.Option(False, "--no-open", help="Don't open browser."),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit machine-readable lifecycle JSON."
+    ),
 ) -> None:
     """Stop the running vitrine server and start a fresh one."""
     from vitrine import server_status, stop_server
 
     info = server_status()
     if info:
-        _info(f"Stopping server (pid={info.get('pid')}, port={info.get('port')})...")
+        if not json_output:
+            _info(
+                f"Stopping server (pid={info.get('pid')}, "
+                f"port={info.get('port')})..."
+            )
         if stop_server():
-            _success("Server stopped.")
+            if not json_output:
+                _success("Server stopped.")
         else:
-            _error("Failed to stop server. Try killing the process manually.")
-            raise typer.Exit(1)
+            message = "Failed to stop server. Try killing the process manually."
+            if json_output:
+                _emit_json(_lifecycle_payload("failed", error=message))
+            else:
+                _error(message)
+            raise typer.Exit(EXIT_FAILURE)
     else:
-        _info("No running server found — starting fresh.")
+        if not json_output:
+            _info("No running server found — starting fresh.")
 
-    _start_background(port=port, no_open=no_open)
+    try:
+        started = _start_background(
+            port=port, no_open=no_open, json_output=json_output
+        )
+    except _StartFailure as exc:
+        if json_output:
+            _emit_json(_lifecycle_payload("failed", error=str(exc)))
+        raise typer.Exit(EXIT_FAILURE) from exc
+    if json_output:
+        _emit_json(_lifecycle_payload("running", started))
 
 
 @app.command()
@@ -67,31 +141,66 @@ def start(
     foreground: bool = typer.Option(
         False, "--foreground", "-f", help="Run in foreground (blocks)."
     ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit machine-readable lifecycle JSON."
+    ),
 ) -> None:
     """Start the vitrine server."""
     from vitrine import server_status
 
     info = server_status()
     if info:
-        _info(
-            f"Server already running (pid={info.get('pid')}, "
-            f"port={info.get('port')}, url={info.get('url')})"
-        )
+        if json_output:
+            _emit_json(_lifecycle_payload("running", info))
+        else:
+            _info(
+                f"Server already running (pid={info.get('pid')}, "
+                f"port={info.get('port')}, url={info.get('url')})"
+            )
         return
 
     if foreground:
+        if json_output:
+            message = "--json cannot be combined with --foreground."
+            _emit_json(_lifecycle_payload("failed", error=message))
+            raise typer.Exit(EXIT_FAILURE)
         from vitrine.server import _run_standalone
 
         _info(f"Starting vitrine server on port {port}...")
         _run_standalone(port=port, no_open=no_open)
     else:
-        _start_background(port=port, no_open=no_open)
+        try:
+            started = _start_background(
+                port=port, no_open=no_open, json_output=json_output
+            )
+        except _StartFailure as exc:
+            if json_output:
+                _emit_json(_lifecycle_payload("failed", error=str(exc)))
+            raise typer.Exit(EXIT_FAILURE) from exc
+        if json_output:
+            _emit_json(_lifecycle_payload("running", started))
 
 
 @app.command()
-def stop() -> None:
+def stop(
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit machine-readable lifecycle JSON."
+    ),
+) -> None:
     """Stop the running vitrine server."""
-    from vitrine import stop_server
+    from vitrine import server_status, stop_server
+
+    if json_output:
+        info = server_status()
+        if stop_server():
+            _emit_json(_lifecycle_payload("stopped"))
+            return
+        if info:
+            message = "Failed to stop the running server."
+            _emit_json(_lifecycle_payload("failed", error=message))
+            raise typer.Exit(EXIT_FAILURE)
+        _emit_json(_lifecycle_payload("stopped"))
+        return
 
     if stop_server():
         _success("Server stopped.")
@@ -100,12 +209,19 @@ def stop() -> None:
 
 
 @app.command()
-def status() -> None:
+def status(
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit machine-readable lifecycle JSON."
+    ),
+) -> None:
     """Show status of the vitrine server."""
     from vitrine import server_status
 
     info = server_status()
     if info:
+        if json_output:
+            _emit_json(_lifecycle_payload("running", info))
+            return
         _success("Server is running")
         console.print(f"  [bold]URL:[/bold]        {info.get('url')}")
         console.print(f"  [bold]PID:[/bold]        {info.get('pid')}")
@@ -113,6 +229,9 @@ def status() -> None:
         console.print(f"  [bold]Session:[/bold]    {info.get('session_id')}")
         console.print(f"  [bold]Started:[/bold]    {info.get('started_at')}")
     else:
+        if json_output:
+            _emit_json(_lifecycle_payload("stopped"))
+            raise typer.Exit(EXIT_NOT_RUNNING)
         _info("No running server found.")
 
 
@@ -174,7 +293,12 @@ def export(
         raise typer.Exit(1)
 
 
-def _start_background(port: int = 7741, no_open: bool = False) -> None:
+def _start_background(
+    port: int = 7741,
+    no_open: bool = False,
+    *,
+    json_output: bool = False,
+) -> dict[str, Any]:
     """Start the server as a background process and wait for it to come up."""
     import subprocess
 
@@ -190,13 +314,20 @@ def _start_background(port: int = 7741, no_open: bool = False) -> None:
 
     from vitrine._utils import detached_popen_kwargs
 
-    _info(f"Starting vitrine server on port {port}...")
-    subprocess.Popen(
-        cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        **detached_popen_kwargs(),
-    )
+    if not json_output:
+        _info(f"Starting vitrine server on port {port}...")
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **detached_popen_kwargs(),
+        )
+    except OSError as exc:
+        message = f"Failed to start vitrine server: {exc}"
+        if not json_output:
+            _error(message)
+        raise _StartFailure(message) from exc
 
     # Wait for server to come up
     from vitrine import server_status
@@ -205,12 +336,26 @@ def _start_background(port: int = 7741, no_open: bool = False) -> None:
     while time.monotonic() < deadline:
         info = server_status()
         if info:
-            _success(f"Server started (pid={info.get('pid')}, url={info.get('url')})")
-            return
+            if not json_output:
+                _success(
+                    f"Server started (pid={info.get('pid')}, url={info.get('url')})"
+                )
+            return info
+        returncode = process.poll()
+        if isinstance(returncode, int) and returncode != 0:
+            message = (
+                "Vitrine server exited before becoming healthy "
+                f"(exit code {returncode})."
+            )
+            if not json_output:
+                _error(message)
+            raise _StartFailure(message)
         time.sleep(0.2)
 
-    _error("Server process started but didn't become healthy within 5s.")
-    raise typer.Exit(1)
+    message = "Server process started but didn't become healthy within 5s."
+    if not json_output:
+        _error(message)
+    raise _StartFailure(message)
 
 
 if __name__ == "__main__":

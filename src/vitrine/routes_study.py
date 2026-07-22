@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import io
-import json
 import zipfile
-from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -15,7 +13,7 @@ if TYPE_CHECKING:
     from vitrine.server import DisplayServer
 
 
-async def api_studies(server: "DisplayServer", request: Request) -> JSONResponse:
+async def api_studies(server: DisplayServer, request: Request) -> JSONResponse:
     """List all studies with metadata and card counts."""
     if server.study_manager:
         server.study_manager.refresh()
@@ -23,7 +21,7 @@ async def api_studies(server: "DisplayServer", request: Request) -> JSONResponse
     return JSONResponse([])
 
 
-async def api_study_rename(server: "DisplayServer", request: Request) -> JSONResponse:
+async def api_study_rename(server: DisplayServer, request: Request) -> JSONResponse:
     """Rename a study by label."""
     study = request.path_params["study"]
     try:
@@ -46,7 +44,7 @@ async def api_study_rename(server: "DisplayServer", request: Request) -> JSONRes
     return JSONResponse({"error": "No study manager"}, status_code=400)
 
 
-async def api_study_context(server: "DisplayServer", request: Request) -> JSONResponse:
+async def api_study_context(server: DisplayServer, request: Request) -> JSONResponse:
     """Return a structured context summary for a study."""
     study = request.path_params["study"]
     if not server.study_manager:
@@ -88,7 +86,7 @@ async def api_study_context(server: "DisplayServer", request: Request) -> JSONRe
     return JSONResponse(ctx)
 
 
-async def api_study_delete(server: "DisplayServer", request: Request) -> JSONResponse:
+async def api_study_delete(server: DisplayServer, request: Request) -> JSONResponse:
     """Delete a study by label."""
     study = request.path_params["study"]
     if server.study_manager:
@@ -101,7 +99,7 @@ async def api_study_delete(server: "DisplayServer", request: Request) -> JSONRes
     return JSONResponse({"error": "No study manager"}, status_code=400)
 
 
-async def api_study_export(server: "DisplayServer", request: Request) -> Response:
+async def api_study_export(server: DisplayServer, request: Request) -> Response:
     """Export a specific study as HTML or JSON."""
     study = request.path_params["study"]
     fmt = request.query_params.get("format", "html")
@@ -135,7 +133,7 @@ async def api_study_export(server: "DisplayServer", request: Request) -> Respons
     )
 
 
-async def api_study_files(server: "DisplayServer", request: Request) -> JSONResponse:
+async def api_study_files(server: DisplayServer, request: Request) -> JSONResponse:
     """List files in a study's output directory."""
     study = request.path_params["study"]
     if not server.study_manager:
@@ -145,7 +143,7 @@ async def api_study_files(server: "DisplayServer", request: Request) -> JSONResp
     return JSONResponse(files)
 
 
-async def api_study_file(server: "DisplayServer", request: Request) -> Response:
+async def api_study_file(server: DisplayServer, request: Request) -> Response:
     """Serve a file from a study's output directory."""
     study = request.path_params["study"]
     filepath = request.path_params["filepath"]
@@ -206,7 +204,7 @@ async def api_study_file(server: "DisplayServer", request: Request) -> Response:
     )
 
 
-async def api_study_files_archive(server: "DisplayServer", request: Request) -> Response:
+async def api_study_files_archive(server: DisplayServer, request: Request) -> Response:
     """Download all output files as a zip archive."""
     study = request.path_params["study"]
     if not server.study_manager:
@@ -234,7 +232,7 @@ async def api_study_files_archive(server: "DisplayServer", request: Request) -> 
     )
 
 
-async def api_export(server: "DisplayServer", request: Request) -> Response:
+async def api_export(server: DisplayServer, request: Request) -> Response:
     """Export all studies as HTML or JSON."""
     fmt = request.query_params.get("format", "html")
 
@@ -265,7 +263,7 @@ async def api_export(server: "DisplayServer", request: Request) -> Response:
     )
 
 
-async def api_all_files_archive(server: "DisplayServer", request: Request) -> Response:
+async def api_all_files_archive(server: DisplayServer, request: Request) -> Response:
     """Download output files from all studies as a zip archive."""
     if not server.study_manager:
         return JSONResponse({"error": "No study manager"}, status_code=400)

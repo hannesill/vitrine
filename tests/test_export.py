@@ -16,6 +16,7 @@ import zipfile
 import pandas as pd
 import pytest
 
+from vitrine._types import CardDescriptor, CardType
 from vitrine.export import (
     _format_cell,
     _render_agent_html,
@@ -24,7 +25,6 @@ from vitrine.export import (
     export_json,
     export_json_bytes,
 )
-from vitrine._types import CardDescriptor, CardType
 from vitrine.renderer import render
 from vitrine.study_manager import StudyManager
 

@@ -470,8 +470,12 @@ class DisplayServer:
         self._thread.start()
         self._started.wait(timeout=5)
 
-        # Wait a moment for the server to fully bind
-        self._wait_for_server()
+        # Wait for the server to fully bind before publishing PID metadata.
+        if not self._wait_for_server():
+            self.stop()
+            raise RuntimeError(
+                f"Vitrine server did not bind to {self.host}:{self.port}"
+            )
 
         # Start dispatch watchdog
         if self._loop:
@@ -502,7 +506,7 @@ class DisplayServer:
             except Exception:
                 pass
 
-    def _wait_for_server(self, timeout: float = 3.0) -> None:
+    def _wait_for_server(self, timeout: float = 3.0) -> bool:
         """Wait for the server to accept connections."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -510,9 +514,10 @@ class DisplayServer:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     s.settimeout(0.1)
                     s.connect((self.host, self.port))
-                    return
+                    return True
             except (ConnectionRefusedError, OSError):
                 time.sleep(0.05)
+        return False
 
     def stop(self) -> None:
         """Stop the server and remove PID file if set."""
@@ -547,7 +552,15 @@ class DisplayServer:
             "token": self.token,
             "started_at": datetime.now(timezone.utc).isoformat(),
         }
-        pid_path.write_text(json.dumps(info, indent=2))
+        temp_path = pid_path.with_name(f".{pid_path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temp_path.write_text(json.dumps(info, indent=2))
+            os.replace(temp_path, pid_path)
+        finally:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
         logger.debug(f"PID file written: {pid_path}")
 
     def _remove_pid_file(self) -> None:
@@ -633,75 +646,6 @@ class DisplayServer:
             logger.debug("Could not broadcast message")
 
 
-def _kill_orphaned_servers(host: str, port_lo: int, port_hi: int) -> None:
-    """Kill any vitrine servers lingering on our port range without a PID file.
-
-    These are servers whose PID file was lost (e.g. the process crashed
-    before cleanup ran).  Without a PID file they are undiscoverable and
-    block port allocation, so new servers keep bumping to higher ports.
-
-    Strategy: probe each port for a vitrine health endpoint.  If found,
-    use ``lsof`` to resolve the PID and send SIGTERM.
-
-    On Windows this is a no-op — orphaned servers are handled by PID file
-    checks and health checks (already implemented).
-    """
-    import sys
-
-    if sys.platform == "win32":
-        return
-
-    import subprocess
-    import urllib.request
-
-    for port in range(port_lo, port_hi + 1):
-        # Quick probe — unoccupied ports fail instantly
-        try:
-            hreq = urllib.request.Request(
-                f"http://{host}:{port}/api/health", method="GET"
-            )
-            with urllib.request.urlopen(hreq, timeout=0.5) as resp:
-                data = json.loads(resp.read())
-            if data.get("status") != "ok":
-                continue
-        except Exception:
-            continue
-
-        logger.debug(f"Found orphaned vitrine server on port {port}")
-
-        # Resolve the PID owning this port via lsof
-        try:
-            out = subprocess.check_output(
-                ["lsof", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
-                text=True,
-                timeout=2,
-            ).strip()
-        except Exception:
-            logger.debug(f"Could not resolve PID for port {port}")
-            continue
-
-        for pid_str in out.splitlines():
-            try:
-                pid = int(pid_str)
-            except ValueError:
-                continue
-            logger.debug(f"Sending SIGTERM to orphaned vitrine pid={pid}")
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except OSError:
-                pass
-
-        # Wait for port to free up
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline:
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.bind((host, port))
-                break
-            except OSError:
-                time.sleep(0.1)
-
-
 def _run_standalone(port: int = _DEFAULT_PORT, no_open: bool = False) -> None:
     """Run the display server as a standalone persistent process.
 
@@ -750,12 +694,6 @@ def _run_standalone(port: int = _DEFAULT_PORT, no_open: bool = False) -> None:
             except (json.JSONDecodeError, OSError):
                 pass
 
-        # Kill any orphaned servers occupying our port range.
-        # These are leftovers from crashed sessions whose PID file was
-        # lost — without this they'd force us onto a higher port and
-        # accumulate indefinitely.
-        _kill_orphaned_servers("127.0.0.1", port, _MAX_PORT)
-
         # No server found for this project — start one while holding the lock
         session_id = uuid.uuid4().hex[:12]
         token = secrets.token_hex(16)
@@ -792,8 +730,10 @@ def _run_standalone(port: int = _DEFAULT_PORT, no_open: bool = False) -> None:
         unlock_file(lock_fd)
         lock_fd.close()
 
-    # Block until signal (outside lock — other processes can now discover us)
-    stop_event.wait()
+    # Persist after the launching process exits. Stop only on an explicit
+    # signal or after the HTTP shutdown endpoint has ended the server thread.
+    while server.is_running and not stop_event.wait(0.2):
+        pass
     server.stop()
 
 
