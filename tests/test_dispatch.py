@@ -137,12 +137,12 @@ class TestParseStreamEvent:
         assert usage is None
 
     def test_empty_json_object_returns_ignore(self):
-        kind, text, usage = _parse_stream_event("{}")
+        kind, _text, _usage = _parse_stream_event("{}")
         assert kind == "ignore"
 
     def test_unknown_event_type_returns_ignore(self):
         event = json.dumps({"type": "system", "message": "starting"})
-        kind, text, usage = _parse_stream_event(event)
+        kind, _text, _usage = _parse_stream_event(event)
         assert kind == "ignore"
 
     def test_assistant_text_block(self):
@@ -154,7 +154,7 @@ class TestParseStreamEvent:
                 },
             }
         )
-        kind, text, usage = _parse_stream_event(event)
+        kind, text, _usage = _parse_stream_event(event)
         assert kind == "text"
         assert text == "Hello world"
 
@@ -170,7 +170,7 @@ class TestParseStreamEvent:
                 },
             }
         )
-        kind, text, usage = _parse_stream_event(event)
+        kind, text, _usage = _parse_stream_event(event)
         assert kind == "text"
         assert text == "Part 1. Part 2."
 
@@ -189,7 +189,7 @@ class TestParseStreamEvent:
                 },
             }
         )
-        kind, text, usage = _parse_stream_event(event)
+        kind, text, _usage = _parse_stream_event(event)
         assert kind == "tool_use"
         assert "protocol.md" in text
 
@@ -208,7 +208,7 @@ class TestParseStreamEvent:
                 },
             }
         )
-        kind, text, usage = _parse_stream_event(event)
+        kind, text, _usage = _parse_stream_event(event)
         assert kind == "tool_use"
         assert "**/*.py" in text
 
@@ -227,7 +227,7 @@ class TestParseStreamEvent:
                 },
             }
         )
-        kind, text, usage = _parse_stream_event(event)
+        kind, text, _usage = _parse_stream_event(event)
         assert kind == "tool_use"
         assert "def main" in text
 
@@ -246,7 +246,7 @@ class TestParseStreamEvent:
                 },
             }
         )
-        kind, text, usage = _parse_stream_event(event)
+        kind, text, _usage = _parse_stream_event(event)
         assert kind == "tool_use"
         assert "python scripts/01_cohort.py" in text
 
@@ -266,7 +266,7 @@ class TestParseStreamEvent:
                 },
             }
         )
-        kind, text, usage = _parse_stream_event(event)
+        kind, text, _usage = _parse_stream_event(event)
         assert kind == "tool_use"
         assert "..." in text
         # The displayed command should be truncated to 80 chars + "..."
@@ -287,7 +287,7 @@ class TestParseStreamEvent:
                 },
             }
         )
-        kind, text, usage = _parse_stream_event(event)
+        kind, text, _usage = _parse_stream_event(event)
         assert kind == "tool_use"
         assert "Write" in text
 
@@ -307,7 +307,7 @@ class TestParseStreamEvent:
                 },
             }
         )
-        kind, text, usage = _parse_stream_event(event)
+        kind, text, _usage = _parse_stream_event(event)
         assert kind == "tool_use"
         assert "Let me check the file." in text
         assert "bar.py" in text
@@ -327,7 +327,7 @@ class TestParseStreamEvent:
                 },
             }
         )
-        kind, text, usage = _parse_stream_event(event)
+        kind, _text, usage = _parse_stream_event(event)
         assert kind == "text"
         assert usage is not None
         assert usage["input_tokens"] == 1000
@@ -390,7 +390,7 @@ class TestParseStreamEvent:
                 "message": {"content": []},
             }
         )
-        kind, text, usage = _parse_stream_event(event)
+        kind, text, _usage = _parse_stream_event(event)
         assert kind == "text"
         assert text == ""
 
@@ -408,18 +408,18 @@ class TestParseGeminiEvent:
         assert usage is None
 
     def test_unknown_type_returns_ignore(self):
-        kind, text, usage = _parse_gemini_event(json.dumps({"type": "ping"}))
+        kind, _text, _usage = _parse_gemini_event(json.dumps({"type": "ping"}))
         assert kind == "ignore"
 
     def test_text_event(self):
         event = json.dumps({"type": "text", "content": "Hello from Gemini"})
-        kind, text, usage = _parse_gemini_event(event)
+        kind, text, _usage = _parse_gemini_event(event)
         assert kind == "text"
         assert text == "Hello from Gemini"
 
     def test_tool_call_event(self):
         event = json.dumps({"type": "tool_call", "name": "read_file"})
-        kind, text, usage = _parse_gemini_event(event)
+        kind, text, _usage = _parse_gemini_event(event)
         assert kind == "tool_use"
         assert "read_file" in text
 
@@ -445,7 +445,7 @@ class TestParseGeminiEvent:
 
     def test_error_event(self):
         event = json.dumps({"type": "error", "message": "quota exceeded"})
-        kind, text, usage = _parse_gemini_event(event)
+        kind, text, _usage = _parse_gemini_event(event)
         assert kind == "error"
         assert text == "quota exceeded"
 
@@ -463,12 +463,12 @@ class TestParseCodexEvent:
         assert usage is None
 
     def test_unknown_type_returns_ignore(self):
-        kind, text, usage = _parse_codex_event(json.dumps({"type": "heartbeat"}))
+        kind, _text, _usage = _parse_codex_event(json.dumps({"type": "heartbeat"}))
         assert kind == "ignore"
 
     def test_message_with_string_content(self):
         event = json.dumps({"type": "message", "content": "Hello from Codex"})
-        kind, text, usage = _parse_codex_event(event)
+        kind, text, _usage = _parse_codex_event(event)
         assert kind == "text"
         assert text == "Hello from Codex"
 
@@ -481,13 +481,13 @@ class TestParseCodexEvent:
                 {"type": "image", "url": "http://x"},
             ],
         })
-        kind, text, usage = _parse_codex_event(event)
+        kind, text, _usage = _parse_codex_event(event)
         assert kind == "text"
         assert text == "Part A. Part B."
 
     def test_function_call_event(self):
         event = json.dumps({"type": "function_call", "name": "bash"})
-        kind, text, usage = _parse_codex_event(event)
+        kind, text, _usage = _parse_codex_event(event)
         assert kind == "tool_use"
         assert "bash" in text
 
@@ -505,13 +505,13 @@ class TestParseCodexEvent:
 
     def test_completed_event(self):
         event = json.dumps({"type": "completed", "result": "Finished"})
-        kind, text, usage = _parse_codex_event(event)
+        kind, text, _usage = _parse_codex_event(event)
         assert kind == "result"
         assert text == "Finished"
 
     def test_error_event(self):
         event = json.dumps({"type": "error", "message": "model overloaded"})
-        kind, text, usage = _parse_codex_event(event)
+        kind, text, _usage = _parse_codex_event(event)
         assert kind == "error"
         assert text == "model overloaded"
 

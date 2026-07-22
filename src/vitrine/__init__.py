@@ -19,6 +19,11 @@ import threading
 from pathlib import Path
 from typing import Any
 
+# Shared mutable state (used by both __init__ and client)
+import vitrine._state as _st
+
+# Client infrastructure (lifecycle, discovery, remote comms)
+from vitrine import client as _client
 from vitrine._types import (
     CardDescriptor,
     CardType,
@@ -28,11 +33,6 @@ from vitrine._types import (
     Form,
     Question,
 )
-
-# Client infrastructure (lifecycle, discovery, remote comms)
-from vitrine import client as _client
-# Shared mutable state (used by both __init__ and client)
-import vitrine._state as _st
 
 __all__ = [
     "CardType",

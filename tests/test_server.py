@@ -100,6 +100,32 @@ class TestPortDiscovery:
         port = srv._find_port()
         assert 7741 <= port <= 7750
 
+    def test_find_port_skips_occupied_without_terminating_owner(
+        self, store, monkeypatch
+    ):
+        attempts = []
+
+        class FakeSocket:
+            def __init__(self, *_args):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def bind(self, address):
+                attempts.append(address)
+                if address[1] == 7741:
+                    raise OSError("occupied")
+
+        monkeypatch.setattr(server_mod.socket, "socket", FakeSocket)
+        srv = DisplayServer(store=store, port=7741)
+
+        assert srv._find_port() == 7742
+        assert attempts == [("127.0.0.1", 7741), ("127.0.0.1", 7742)]
+
 
 class TestStarletteApp:
     """Test the Starlette app directly using httpx without starting the server."""
@@ -340,9 +366,12 @@ class TestShutdownEndpoint:
         resp = client.post("/api/shutdown")
         assert resp.status_code == 401
 
-    def test_shutdown_with_auth(self, app):
+    def test_shutdown_with_auth(self, app, server):
+        from types import SimpleNamespace
+
         from starlette.testclient import TestClient
 
+        server._server = SimpleNamespace(should_exit=False)
         client = TestClient(app)
         resp = client.post(
             "/api/shutdown",
@@ -350,6 +379,7 @@ class TestShutdownEndpoint:
         )
         assert resp.status_code == 200
         assert resp.json()["status"] == "shutting_down"
+        assert server._server.should_exit is True
 
 
 class TestPidFile:
@@ -371,6 +401,7 @@ class TestPidFile:
         assert data["session_id"] == "sess-1"
         assert data["token"] == "tok"
         assert "pid" in data
+        assert list(tmp_path.glob(".*.tmp")) == []
 
         srv._remove_pid_file()
         assert not pid_path.exists()
@@ -1328,7 +1359,7 @@ class TestAgentEndpoints:
     def test_create_agent_card(self, agent_app, study_mgr):
         from starlette.testclient import TestClient
 
-        app, srv = agent_app
+        app, _srv = agent_app
         # Create a study first
         study_mgr.get_or_create_study("my-study")
 
@@ -1347,7 +1378,7 @@ class TestAgentEndpoints:
     def test_create_agent_card_report(self, agent_app, study_mgr):
         from starlette.testclient import TestClient
 
-        app, srv = agent_app
+        app, _srv = agent_app
         study_mgr.get_or_create_study("my-study")
 
         client = TestClient(app)
@@ -1361,7 +1392,7 @@ class TestAgentEndpoints:
     def test_create_agent_card_paper(self, agent_app, study_mgr):
         from starlette.testclient import TestClient
 
-        app, srv = agent_app
+        app, _srv = agent_app
         study_mgr.get_or_create_study("my-study")
 
         client = TestClient(app)
@@ -1378,7 +1409,7 @@ class TestAgentEndpoints:
     def test_create_agent_unknown_task(self, agent_app, study_mgr):
         from starlette.testclient import TestClient
 
-        app, srv = agent_app
+        app, _srv = agent_app
         study_mgr.get_or_create_study("my-study")
 
         client = TestClient(app)
@@ -1392,7 +1423,7 @@ class TestAgentEndpoints:
     def test_create_agent_invalid_json(self, agent_app):
         from starlette.testclient import TestClient
 
-        app, srv = agent_app
+        app, _srv = agent_app
         client = TestClient(app)
         resp = client.post(
             "/api/studies/test/agents",
@@ -1405,7 +1436,7 @@ class TestAgentEndpoints:
     def test_get_agent_status_unknown(self, agent_app):
         from starlette.testclient import TestClient
 
-        app, srv = agent_app
+        app, _srv = agent_app
         client = TestClient(app)
         resp = client.get("/api/agents/nonexistent")
         assert resp.status_code == 200
@@ -1415,7 +1446,7 @@ class TestAgentEndpoints:
     def test_get_agent_status_known(self, agent_app, study_mgr):
         from starlette.testclient import TestClient
 
-        app, srv = agent_app
+        app, _srv = agent_app
         study_mgr.get_or_create_study("s1")
 
         client = TestClient(app)
@@ -1433,7 +1464,7 @@ class TestAgentEndpoints:
     def test_run_agent_missing_card(self, agent_app):
         from starlette.testclient import TestClient
 
-        app, srv = agent_app
+        app, _srv = agent_app
         client = TestClient(app)
         resp = client.post("/api/agents/nonexistent/run", json={})
         assert resp.status_code == 400
@@ -1443,7 +1474,7 @@ class TestAgentEndpoints:
         """DELETE on unknown card returns 404."""
         from starlette.testclient import TestClient
 
-        app, srv = agent_app
+        app, _srv = agent_app
         client = TestClient(app)
         resp = client.delete("/api/agents/nonexistent")
         assert resp.status_code == 404
@@ -1454,7 +1485,7 @@ class TestAgentEndpoints:
 
         from vitrine._types import CardDescriptor, CardType
 
-        app, srv = agent_app
+        app, _srv = agent_app
         _, store = study_mgr.get_or_create_study("s1")
 
         # Create an AGENT card directly in the store (simulating orphan)
@@ -1483,7 +1514,7 @@ class TestAgentEndpoints:
 
         from vitrine._types import CardDescriptor, CardType
 
-        app, srv = agent_app
+        app, _srv = agent_app
         _, store = study_mgr.get_or_create_study("s1")
 
         card = CardDescriptor(

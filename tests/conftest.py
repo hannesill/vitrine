@@ -1,6 +1,5 @@
 """Shared test fixtures for the vitrine test suite."""
 
-from pathlib import Path
 
 import pytest
 

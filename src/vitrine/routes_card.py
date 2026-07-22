@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 
-from vitrine._types import CardDescriptor
 from vitrine.artifacts import _serialize_card
 
 if TYPE_CHECKING:
@@ -23,7 +22,7 @@ def _get_static_dir():
     return Path(__file__).parent / "static"
 
 
-async def index(server: "DisplayServer", request: Request) -> Response:
+async def index(server: DisplayServer, request: Request) -> Response:
     """Serve the main index.html page."""
     static_dir = _get_static_dir()
     index_path = static_dir / "index.html"
@@ -32,7 +31,7 @@ async def index(server: "DisplayServer", request: Request) -> Response:
     return HTMLResponse(index_path.read_text())
 
 
-async def api_cards(server: "DisplayServer", request: Request) -> JSONResponse:
+async def api_cards(server: DisplayServer, request: Request) -> JSONResponse:
     """List card descriptors, optionally filtered by study."""
     study = request.query_params.get("study")
     if server.study_manager:
@@ -45,7 +44,7 @@ async def api_cards(server: "DisplayServer", request: Request) -> JSONResponse:
     return JSONResponse([_serialize_card(c) for c in cards])
 
 
-async def api_card(server: "DisplayServer", request: Request) -> JSONResponse:
+async def api_card(server: DisplayServer, request: Request) -> JSONResponse:
     """Return a single card descriptor by ID or prefix."""
     raw = request.path_params["card_id"]
     id_prefix = raw.split("-")[0]
@@ -64,7 +63,7 @@ async def api_card(server: "DisplayServer", request: Request) -> JSONResponse:
     return JSONResponse({"error": f"Card {raw} not found"}, status_code=404)
 
 
-async def api_card_delete(server: "DisplayServer", request: Request) -> JSONResponse:
+async def api_card_delete(server: DisplayServer, request: Request) -> JSONResponse:
     """Soft-delete or restore a card."""
     card_id = request.path_params["card_id"]
     try:
@@ -104,7 +103,7 @@ async def api_card_delete(server: "DisplayServer", request: Request) -> JSONResp
     )
 
 
-async def api_table(server: "DisplayServer", request: Request) -> JSONResponse:
+async def api_table(server: DisplayServer, request: Request) -> JSONResponse:
     """Return a page of table data from a stored Parquet artifact."""
     card_id = request.path_params["card_id"]
     offset = max(0, int(request.query_params.get("offset", "0")))
@@ -135,7 +134,7 @@ async def api_table(server: "DisplayServer", request: Request) -> JSONResponse:
         )
 
 
-async def api_table_selection(server: "DisplayServer", request: Request) -> JSONResponse:
+async def api_table_selection(server: DisplayServer, request: Request) -> JSONResponse:
     """Return selected rows for a table card."""
     card_id = request.path_params["card_id"]
     indices = server._selections.get(card_id, [])
@@ -185,7 +184,7 @@ async def api_table_selection(server: "DisplayServer", request: Request) -> JSON
         )
 
 
-async def api_table_stats(server: "DisplayServer", request: Request) -> JSONResponse:
+async def api_table_stats(server: DisplayServer, request: Request) -> JSONResponse:
     """Return per-column statistics for a table artifact."""
     card_id = request.path_params["card_id"]
     store = server._resolve_store(card_id)
@@ -202,7 +201,7 @@ async def api_table_stats(server: "DisplayServer", request: Request) -> JSONResp
         )
 
 
-async def api_table_export(server: "DisplayServer", request: Request) -> Response:
+async def api_table_export(server: DisplayServer, request: Request) -> Response:
     """Export a table artifact as CSV."""
     card_id = request.path_params["card_id"]
     sort_col = request.query_params.get("sort")
@@ -235,7 +234,7 @@ async def api_table_export(server: "DisplayServer", request: Request) -> Respons
         )
 
 
-async def api_artifact(server: "DisplayServer", request: Request) -> Response:
+async def api_artifact(server: DisplayServer, request: Request) -> Response:
     """Return a raw artifact by card ID."""
     card_id = request.path_params["card_id"]
     store = server._resolve_store(card_id)
@@ -262,7 +261,7 @@ async def api_artifact(server: "DisplayServer", request: Request) -> Response:
         )
 
 
-async def api_session(server: "DisplayServer", request: Request) -> JSONResponse:
+async def api_session(server: DisplayServer, request: Request) -> JSONResponse:
     """Return session metadata."""
     if server.study_manager:
         studies = server.study_manager.list_studies()
@@ -281,7 +280,7 @@ async def api_session(server: "DisplayServer", request: Request) -> JSONResponse
     return JSONResponse({"session_id": server.session_id, "study_names": []})
 
 
-async def api_health(server: "DisplayServer", request: Request) -> JSONResponse:
+async def api_health(server: DisplayServer, request: Request) -> JSONResponse:
     """Health check endpoint. No auth required."""
     uptime_seconds = (datetime.now(timezone.utc) - server._started_at).total_seconds()
     study_count = (
@@ -298,7 +297,7 @@ async def api_health(server: "DisplayServer", request: Request) -> JSONResponse:
     )
 
 
-async def api_command(server: "DisplayServer", request: Request) -> JSONResponse:
+async def api_command(server: DisplayServer, request: Request) -> JSONResponse:
     """Unified command endpoint for pushing cards/sections/clears."""
     if not server._check_auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -352,7 +351,7 @@ async def api_command(server: "DisplayServer", request: Request) -> JSONResponse
     )
 
 
-async def api_shutdown(server: "DisplayServer", request: Request) -> JSONResponse:
+async def api_shutdown(server: DisplayServer, request: Request) -> JSONResponse:
     """Gracefully shut down the server. Requires auth."""
     if not server._check_auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -362,7 +361,7 @@ async def api_shutdown(server: "DisplayServer", request: Request) -> JSONRespons
     return JSONResponse({"status": "shutting_down"})
 
 
-async def api_response(server: "DisplayServer", request: Request) -> JSONResponse:
+async def api_response(server: DisplayServer, request: Request) -> JSONResponse:
     """Long-poll endpoint for blocking show() responses."""
     if not server._check_auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -375,7 +374,7 @@ async def api_response(server: "DisplayServer", request: Request) -> JSONRespons
     return JSONResponse(result)
 
 
-async def api_events(server: "DisplayServer", request: Request) -> JSONResponse:
+async def api_events(server: DisplayServer, request: Request) -> JSONResponse:
     """Return and drain queued UI events. Requires auth."""
     if not server._check_auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)

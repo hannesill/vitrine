@@ -17,6 +17,7 @@ Tests cover:
 """
 
 import json
+import os
 
 import pandas as pd
 import pytest
@@ -232,6 +233,44 @@ class TestDiscovery:
         result = _client_mod._discover_server()
         assert result is None
 
+    def test_discover_removes_malformed_pid_file(self, monkeypatch, tmp_path):
+        pid_path = tmp_path / ".server.json"
+        pid_path.write_text("{not-json")
+        monkeypatch.setattr(_client_mod, "_pid_file_path", lambda: pid_path)
+
+        assert _client_mod._discover_server() is None
+        assert not pid_path.exists()
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("pid", "123"),
+            ("pid", True),
+            ("port", "7741"),
+            ("port", 0),
+            ("session_id", None),
+            ("url", None),
+            ("host", None),
+        ],
+    )
+    def test_discover_removes_invalid_pid_fields(
+        self, monkeypatch, tmp_path, field, value
+    ):
+        info = {
+            "pid": os.getpid(),
+            "port": 7741,
+            "host": "127.0.0.1",
+            "url": "http://vitrine.localhost:7741",
+            "session_id": "session",
+        }
+        info[field] = value
+        pid_path = tmp_path / ".server.json"
+        pid_path.write_text(json.dumps(info))
+        monkeypatch.setattr(_client_mod, "_pid_file_path", lambda: pid_path)
+
+        assert _client_mod._discover_server() is None
+        assert not pid_path.exists()
+
     def test_discover_stale_pid(self, monkeypatch, tmp_path):
         """Discovery cleans up PID file when process is dead."""
         pid_path = tmp_path / ".server.json"
@@ -256,8 +295,6 @@ class TestDiscovery:
 
     def test_discover_health_check_fails(self, monkeypatch, tmp_path):
         """Discovery cleans up PID file when health check fails."""
-        import os
-
         pid_path = tmp_path / ".server.json"
         pid_path.write_text(
             json.dumps(
@@ -277,11 +314,10 @@ class TestDiscovery:
 
         result = _client_mod._discover_server()
         assert result is None
+        assert not pid_path.exists()
 
     def test_discover_valid_server(self, monkeypatch, tmp_path):
         """Discovery returns info when process alive and health check passes."""
-        import os
-
         info = {
             "pid": os.getpid(),
             "port": 7741,
@@ -303,8 +339,6 @@ class TestDiscovery:
 
     def test_is_process_alive_current_pid(self):
         """Current process should be alive."""
-        import os
-
         assert _client_mod._is_process_alive(os.getpid()) is True
 
     def test_is_process_alive_dead_pid(self):
@@ -1328,7 +1362,6 @@ class TestPollRemoteResponse:
 
     def test_poll_remote_response_success(self, monkeypatch):
         """Mock successful HTTP response, verify parsed result."""
-        import io
         import urllib.request
 
         expected = {"action": "confirm", "card_id": "card-123", "message": "ok"}

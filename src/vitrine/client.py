@@ -114,6 +114,15 @@ def _health_check(url: str, expected_session_id: str) -> bool:
     return health_check(url, session_id=expected_session_id)
 
 
+def _discard_stale_pid_file(pid_path: Path, reason: str) -> None:
+    """Remove unusable server metadata without touching any process."""
+    logger.debug(f"{reason}, removing {pid_path}")
+    try:
+        pid_path.unlink()
+    except OSError:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Server discovery
 # ---------------------------------------------------------------------------
@@ -130,7 +139,14 @@ def _discover_server() -> dict[str, Any] | None:
 
     try:
         info = json.loads(pid_path.read_text())
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError:
+        _discard_stale_pid_file(pid_path, "Invalid PID file JSON")
+        return None
+    except OSError:
+        return None
+
+    if not isinstance(info, dict):
+        _discard_stale_pid_file(pid_path, "Invalid PID file payload")
         return None
 
     pid = info.get("pid")
@@ -139,16 +155,25 @@ def _discover_server() -> dict[str, Any] | None:
     host = info.get("host", "127.0.0.1")
     port = info.get("port")
 
-    if not all([pid, session_id, url]):
+    valid = (
+        type(pid) is int
+        and pid > 0
+        and type(port) is int
+        and 1 <= port <= 65535
+        and isinstance(session_id, str)
+        and bool(session_id)
+        and isinstance(url, str)
+        and bool(url)
+        and isinstance(host, str)
+        and bool(host)
+    )
+    if not valid:
+        _discard_stale_pid_file(pid_path, "Invalid PID file fields")
         return None
 
     # Check if process is alive
     if not _is_process_alive(pid):
-        logger.debug(f"Stale PID file (pid={pid} not alive), removing")
-        try:
-            pid_path.unlink()
-        except OSError:
-            pass
+        _discard_stale_pid_file(pid_path, f"Stale PID file (pid={pid} not alive)")
         return None
 
     # Build an API-safe URL from host:port.  The "url" field uses
@@ -156,11 +181,9 @@ def _discover_server() -> dict[str, Any] | None:
     # so all programmatic access must go through 127.0.0.1.
     api_url = f"http://{host}:{port}" if port else url
     if not _health_check(api_url, session_id):
-        logger.debug(f"Health check failed for {api_url}, removing stale PID file")
-        try:
-            pid_path.unlink()
-        except OSError:
-            pass
+        _discard_stale_pid_file(
+            pid_path, f"Health check failed for {api_url}; stale PID file"
+        )
         return None
 
     info["api_url"] = api_url

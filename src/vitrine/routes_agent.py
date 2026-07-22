@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from vitrine.server import DisplayServer
 
 
-async def api_create_agent(server: "DisplayServer", request: Request) -> JSONResponse:
+async def api_create_agent(server: DisplayServer, request: Request) -> JSONResponse:
     """Create an agent card for a study."""
     study = request.path_params["study"]
     try:
@@ -52,7 +52,7 @@ async def api_create_agent(server: "DisplayServer", request: Request) -> JSONRes
         return JSONResponse({"error": str(e)}, status_code=400)
 
 
-async def api_run_agent(server: "DisplayServer", request: Request) -> JSONResponse:
+async def api_run_agent(server: DisplayServer, request: Request) -> JSONResponse:
     """Start an agent for an existing agent card."""
     card_id = request.path_params["card_id"]
     config = None
@@ -77,7 +77,7 @@ async def api_run_agent(server: "DisplayServer", request: Request) -> JSONRespon
         return JSONResponse({"error": str(e)}, status_code=400)
 
 
-async def api_agent_handler(server: "DisplayServer", request: Request) -> JSONResponse:
+async def api_agent_handler(server: DisplayServer, request: Request) -> JSONResponse:
     """Handle GET (status) and DELETE (cancel) for an agent card."""
     card_id = request.path_params["card_id"]
     if request.method == "DELETE":
@@ -86,7 +86,6 @@ async def api_agent_handler(server: "DisplayServer", request: Request) -> JSONRe
             return JSONResponse({"status": "ok"})
         if server.study_manager:
             from vitrine._types import CardType
-            from vitrine.artifacts import _serialize_card
 
             for card in server.study_manager.list_all_cards():
                 if card.card_id != card_id:
