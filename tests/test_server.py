@@ -19,6 +19,7 @@ from vitrine.artifacts import ArtifactStore
 from vitrine.renderer import render
 from vitrine.server import DisplayServer
 from vitrine.study_manager import StudyManager
+from vitrine.ws_handlers import _is_allowed_ws_origin, ws_endpoint
 
 _TEST_TOKEN = "test-secret-token-1234"
 
@@ -273,6 +274,70 @@ class TestStarletteApp:
             msg2 = ws.receive_json()
             assert msg2["type"] == "display.add"
             assert msg2["card"]["title"] == "Card 2"
+
+
+class TestWebSocketOriginValidation:
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            None,
+            "http://vitrine.localhost:7799",
+            "http://127.0.0.1:7799",
+            "http://localhost:7799",
+        ],
+    )
+    def test_accepts_vitrine_page_and_originless_clients(self, origin):
+        assert _is_allowed_ws_origin(origin, 7799) is True
+
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            "https://vitrine.localhost:7799",
+            "http://vitrine.localhost:7800",
+            "http://example.com:7799",
+            "http://127.0.0.1:7799/path",
+            "http://user@127.0.0.1:7799",
+            "null",
+            "http://127.0.0.1:not-a-port",
+        ],
+    )
+    def test_rejects_foreign_or_malformed_origins(self, origin):
+        assert _is_allowed_ws_origin(origin, 7799) is False
+
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            "http://vitrine.localhost:7799",
+            "http://127.0.0.1:7799",
+            "http://localhost:7799",
+        ],
+    )
+    def test_loopback_page_origins_connect(self, server, origin):
+        from starlette.testclient import TestClient
+
+        client = TestClient(server._app)
+        with client.websocket_connect("/ws", headers={"origin": origin}) as ws:
+            assert ws.receive_json()["type"] == "display.replay_done"
+
+    async def test_rejects_before_accepting(self, server):
+        class FakeWebSocket:
+            def __init__(self):
+                self.headers = {"origin": "https://example.com"}
+                self.accepted = False
+                self.close_code = None
+
+            async def accept(self):
+                self.accepted = True
+
+            async def close(self, code):
+                self.close_code = code
+
+        ws = FakeWebSocket()
+
+        await ws_endpoint(server, ws)
+
+        assert ws.accepted is False
+        assert ws.close_code == 1008
 
 
 class TestHealthEndpoint:

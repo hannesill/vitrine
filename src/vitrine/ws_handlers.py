@@ -6,6 +6,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
@@ -16,9 +17,48 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_ALLOWED_ORIGIN_HOSTS = frozenset(
+    {
+        "127.0.0.1",
+        "localhost",
+        "vitrine.localhost",
+    }
+)
 
-async def ws_endpoint(server: "DisplayServer", ws: WebSocket) -> None:
+
+def _is_allowed_ws_origin(origin: str | None, port: int) -> bool:
+    """Allow Vitrine page origins on the bound port.
+
+    Non-browser clients may omit Origin. Browsers always send it, so supplied
+    values must exactly match a loopback Vitrine page origin.
+    """
+    if origin is None:
+        return True
+    try:
+        parsed = urlsplit(origin)
+        origin_port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "http"
+        and parsed.hostname in _ALLOWED_ORIGIN_HOSTS
+        and origin_port == port
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.path == ""
+        and parsed.query == ""
+        and parsed.fragment == ""
+    )
+
+
+async def ws_endpoint(server: DisplayServer, ws: WebSocket) -> None:
     """Handle a WebSocket connection."""
+    origin = ws.headers.get("origin")
+    if not _is_allowed_ws_origin(origin, server.port):
+        logger.warning("Rejected WebSocket connection with foreign Origin")
+        await ws.close(code=1008)
+        return
+
     await ws.accept()
     with server._lock:
         server._connections.append(ws)
@@ -57,7 +97,7 @@ async def ws_endpoint(server: "DisplayServer", ws: WebSocket) -> None:
                 server._connections.remove(ws)
 
 
-async def handle_ws_event(server: "DisplayServer", data: dict[str, Any]) -> None:
+async def handle_ws_event(server: DisplayServer, data: dict[str, Any]) -> None:
     """Route incoming WebSocket events from the browser."""
     msg_type = data.get("type")
     logger.debug(f"Received WebSocket message: {msg_type}")
@@ -87,7 +127,7 @@ async def handle_ws_event(server: "DisplayServer", data: dict[str, Any]) -> None
 
 
 async def _handle_response(
-    server: "DisplayServer", card_id: str, payload: dict[str, Any]
+    server: DisplayServer, card_id: str, payload: dict[str, Any]
 ) -> None:
     """Resolve a pending blocking show() call."""
     action = payload.get("action", "confirm")
@@ -145,7 +185,7 @@ async def _handle_response(
 
 
 async def _handle_annotation(
-    server: "DisplayServer", card_id: str, payload: dict[str, Any]
+    server: DisplayServer, card_id: str, payload: dict[str, Any]
 ) -> None:
     """Handle researcher annotations: add, edit, delete."""
     action = payload.get("action")
@@ -210,7 +250,7 @@ async def _handle_annotation(
 
 
 async def _handle_rename(
-    server: "DisplayServer", card_id: str, payload: dict[str, Any]
+    server: DisplayServer, card_id: str, payload: dict[str, Any]
 ) -> None:
     """Handle card rename."""
     new_title = (payload.get("new_title") or "").strip()
@@ -229,7 +269,7 @@ async def _handle_rename(
 
 
 async def _handle_dismiss(
-    server: "DisplayServer", card_id: str, payload: dict[str, Any]
+    server: DisplayServer, card_id: str, payload: dict[str, Any]
 ) -> None:
     """Handle card dismiss/un-dismiss."""
     dismissed = payload.get("dismissed", True)
@@ -247,7 +287,7 @@ async def _handle_dismiss(
 
 
 async def _handle_delete(
-    server: "DisplayServer", card_id: str, payload: dict[str, Any]
+    server: DisplayServer, card_id: str, payload: dict[str, Any]
 ) -> None:
     """Handle card delete/restore via WebSocket."""
     deleted = payload.get("deleted", True)
@@ -273,7 +313,7 @@ async def _handle_delete(
 
 
 async def _handle_general_event(
-    server: "DisplayServer", event_type: str, card_id: str, payload: dict[str, Any]
+    server: DisplayServer, event_type: str, card_id: str, payload: dict[str, Any]
 ) -> None:
     """Handle general events (row_click, point_select, etc.)."""
     from vitrine._types import DisplayEvent
