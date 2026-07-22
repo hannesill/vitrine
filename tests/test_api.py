@@ -550,9 +550,7 @@ class TestServerLifecycle:
         assert captured["start_new_session"] is True
         assert "--no-open" in captured["cmd"]
 
-    def test_ensure_started_releases_lock_before_spawning(
-        self, monkeypatch, tmp_path
-    ):
+    def test_ensure_started_releases_lock_before_spawning(self, monkeypatch, tmp_path):
         """Parent must release the startup lock before the child tries to take it."""
         events = []
         discover_calls = 0
@@ -1183,7 +1181,9 @@ class TestFileLocking:
 
     def test_lock_file_path(self, tmp_path, monkeypatch):
         """_lock_file_path returns correct path."""
-        monkeypatch.setattr(_client_mod, "_get_vitrine_dir", lambda: tmp_path / "vitrine")
+        monkeypatch.setattr(
+            _client_mod, "_get_vitrine_dir", lambda: tmp_path / "vitrine"
+        )
         path = _client_mod._lock_file_path()
         assert path == tmp_path / "vitrine" / ".server.lock"
 

@@ -137,17 +137,13 @@ async def _handle_response(
         if sel_store:
             sel_store.store_selection(artifact_id, selected_rows, columns)
         elif server.study_manager:
-            server.study_manager.store_selection(
-                artifact_id, selected_rows, columns
-            )
+            server.study_manager.store_selection(artifact_id, selected_rows, columns)
     elif points:
         artifact_id = f"resp-{card_id}"
         if sel_store:
             sel_store.store_selection_json(artifact_id, {"points": points})
         elif server.study_manager:
-            server.study_manager.store_selection_json(
-                artifact_id, {"points": points}
-            )
+            server.study_manager.store_selection_json(artifact_id, {"points": points})
 
     summary = server._build_summary(card_id, selected_rows, points, columns)
 
@@ -286,6 +282,7 @@ async def _handle_delete(
     deleted = payload.get("deleted", True)
     if deleted and card_id in server.dispatches:
         from vitrine.dispatch import cancel_agent
+
         await cancel_agent(card_id, server)
     store = server._resolve_store(card_id)
     if store is not None:

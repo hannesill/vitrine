@@ -32,9 +32,7 @@ async def api_create_agent(server: DisplayServer, request: Request) -> JSONRespo
     if task not in _dispatch_mod._TASK_CONFIG:
         available = ", ".join(sorted(_dispatch_mod._TASK_CONFIG))
         return JSONResponse(
-            {
-                "error": f"Unknown task: {task!r} (expected one of: {available})"
-            },
+            {"error": f"Unknown task: {task!r} (expected one of: {available})"},
             status_code=400,
         )
 

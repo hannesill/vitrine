@@ -94,9 +94,7 @@ class TestServerCreation:
         monkeypatch.setenv("VITRINE_DISPLAY_HOST", "localhost")
         assert server.url == "http://localhost:7799"
 
-    def test_display_host_env_override_rejects_non_loopback(
-        self, server, monkeypatch
-    ):
+    def test_display_host_env_override_rejects_non_loopback(self, server, monkeypatch):
         monkeypatch.setenv("VITRINE_DISPLAY_HOST", "example.com")
         with pytest.raises(ValueError, match="supported loopback host"):
             _ = server.url

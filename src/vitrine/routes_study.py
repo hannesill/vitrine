@@ -93,9 +93,7 @@ async def api_study_delete(server: DisplayServer, request: Request) -> JSONRespo
         deleted = server.study_manager.delete_study(study)
         if deleted:
             return JSONResponse({"status": "ok"})
-        return JSONResponse(
-            {"error": f"Study '{study}' not found"}, status_code=404
-        )
+        return JSONResponse({"error": f"Study '{study}' not found"}, status_code=404)
     return JSONResponse({"error": "No study manager"}, status_code=400)
 
 

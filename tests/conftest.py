@@ -1,6 +1,5 @@
 """Shared test fixtures for the vitrine test suite."""
 
-
 import pytest
 
 from vitrine.dispatch import configure

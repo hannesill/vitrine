@@ -317,7 +317,9 @@ class TestRenderAgentHtml:
         assert "ignored" not in html
 
     def test_markdown_output(self):
-        html = _render_agent_html(self._make_card(status="completed", output="**bold**"))
+        html = _render_agent_html(
+            self._make_card(status="completed", output="**bold**")
+        )
         assert "markdown-export" in html
         assert "**bold**" in html  # escaped in div
         assert "marked.parse" in html  # script block

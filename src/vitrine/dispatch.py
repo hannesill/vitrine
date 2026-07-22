@@ -41,6 +41,8 @@ _DISPATCH_TIMEOUT = 1800  # 30 minutes
 _UPDATE_INTERVAL = 0.5  # seconds between card updates (debounce)
 _SANDBOX_SUFFIX = "_reproduce"  # suffix for sandboxed output directory copies
 _MAX_CONCURRENT = 5  # global running agent limit
+
+
 @dataclass
 class BackendConfig:
     """Configuration for a CLI agent backend (Claude Code, Gemini CLI, Codex CLI)."""
@@ -71,7 +73,10 @@ def _prompt_as_arg_or_file(prompt: str) -> tuple[str, str | None]:
     if len(encoded) <= _PROMPT_FILE_THRESHOLD:
         return prompt, None
     f = tempfile.NamedTemporaryFile(
-        mode="wb", suffix=".md", prefix="vitrine-prompt-", delete=False,
+        mode="wb",
+        suffix=".md",
+        prefix="vitrine-prompt-",
+        delete=False,
     )
     f.write(encoded)
     f.close()
@@ -88,11 +93,14 @@ def _build_claude_args(
     """Build CLI args for Claude Code. Prompt is piped via stdin."""
     args = [
         binary,
-        "-p", "-",
-        "--output-format", "stream-json",
+        "-p",
+        "-",
+        "--output-format",
+        "stream-json",
         "--verbose",
         "--dangerously-skip-permissions",
-        "--allowedTools", allowed_tools,
+        "--allowedTools",
+        allowed_tools,
     ]
     if model and model != "sonnet":
         args.extend(["--model", model])
@@ -111,8 +119,10 @@ def _build_gemini_args(
     """Build CLI args for Gemini CLI. Prompt is a positional arg."""
     args = [
         binary,
-        "--approval-mode", "yolo",
-        "--output-format", "stream-json",
+        "--approval-mode",
+        "yolo",
+        "--output-format",
+        "stream-json",
     ]
     if model:
         args.extend(["--model", model])
@@ -133,7 +143,8 @@ def _build_codex_args(
         binary,
         "exec",
         "--full-auto",
-        "--sandbox", "danger-full-access",
+        "--sandbox",
+        "danger-full-access",
         "--json",
     ]
     if model:
@@ -201,9 +212,7 @@ def _parse_codex_event(line: str) -> tuple[str, str, dict[str, Any] | None]:
     if evt_type == "message":
         content = obj.get("content", "")
         if isinstance(content, list):
-            parts = [
-                b.get("text", "") for b in content if b.get("type") == "text"
-            ]
+            parts = [b.get("text", "") for b in content if b.get("type") == "text"]
             return ("text", "".join(parts), None)
         return ("text", str(content), None)
 
@@ -291,7 +300,11 @@ _DEFAULT_TASK_CONFIG: dict[str, tuple[str, str, str]] = {
     "reproduce": ("reproduce-study", "Reproducibility Audit", "Bash,Read,Glob,Grep"),
     "report": ("export-report", "Study Report", "Read,Glob,Grep"),
     "paper": ("draft-paper", "Paper Draft", "Bash,Read,Glob,Grep,Write"),
-    "presentation": ("create-presentation", "Presentation", "Bash,Read,Glob,Grep,Write"),
+    "presentation": (
+        "create-presentation",
+        "Presentation",
+        "Bash,Read,Glob,Grep,Write",
+    ),
 }
 
 
@@ -695,10 +708,7 @@ async def run_agent(
         info.extra["prompt_tmp_files"] = tmp_files
 
     # Strip backend-specific env vars from child process
-    env = {
-        k: v for k, v in os.environ.items()
-        if k not in backend_cfg.env_strip
-    }
+    env = {k: v for k, v in os.environ.items() if k not in backend_cfg.env_strip}
 
     from vitrine._utils import detached_popen_kwargs
 
@@ -1002,21 +1012,53 @@ async def _stream_monitor(info: DispatchInfo, server: DispatchHost) -> None:
             if not display.strip():
                 display = "*Agent completed with no output.*"
             await _update_agent_card(
-                info.card_id, info.study, server,
-                {"status": "completed", "output": display, "completed_at": completed_at, "duration": duration, "usage": usage},
+                info.card_id,
+                info.study,
+                server,
+                {
+                    "status": "completed",
+                    "output": display,
+                    "completed_at": completed_at,
+                    "duration": duration,
+                    "usage": usage,
+                },
                 title=card_title,
             )
-            await server.broadcast({"type": "agent.completed", "study": info.study, "task": info.task, "card_id": info.card_id})
+            await server.broadcast(
+                {
+                    "type": "agent.completed",
+                    "study": info.study,
+                    "task": info.task,
+                    "card_id": info.card_id,
+                }
+            )
         else:
             info.status = "failed"
             info.error = f"Process exited with code {returncode}"
             error_output = accumulated + f"\n\n---\n**Error:** {info.error}"
             await _update_agent_card(
-                info.card_id, info.study, server,
-                {"status": "failed", "output": error_output, "completed_at": completed_at, "duration": duration, "error": info.error, "usage": usage},
+                info.card_id,
+                info.study,
+                server,
+                {
+                    "status": "failed",
+                    "output": error_output,
+                    "completed_at": completed_at,
+                    "duration": duration,
+                    "error": info.error,
+                    "usage": usage,
+                },
                 title=card_title,
             )
-            await server.broadcast({"type": "agent.failed", "study": info.study, "task": info.task, "card_id": info.card_id, "error": info.error})
+            await server.broadcast(
+                {
+                    "type": "agent.failed",
+                    "study": info.study,
+                    "task": info.task,
+                    "card_id": info.card_id,
+                    "error": info.error,
+                }
+            )
 
     except asyncio.TimeoutError:
         try:
@@ -1037,9 +1079,32 @@ async def _stream_monitor(info: DispatchInfo, server: DispatchHost) -> None:
             end_dt = datetime.fromisoformat(completed_at)
             duration = (end_dt - start_dt).total_seconds()
 
-        timeout_output = accumulated + f"\n\n---\n**Timed out** after {_DISPATCH_TIMEOUT}s"
-        await _update_agent_card(info.card_id, info.study, server, {"status": "failed", "output": timeout_output, "completed_at": completed_at, "duration": duration, "error": info.error, "usage": usage}, title=card_title)
-        await server.broadcast({"type": "agent.failed", "study": info.study, "task": info.task, "card_id": info.card_id, "error": info.error})
+        timeout_output = (
+            accumulated + f"\n\n---\n**Timed out** after {_DISPATCH_TIMEOUT}s"
+        )
+        await _update_agent_card(
+            info.card_id,
+            info.study,
+            server,
+            {
+                "status": "failed",
+                "output": timeout_output,
+                "completed_at": completed_at,
+                "duration": duration,
+                "error": info.error,
+                "usage": usage,
+            },
+            title=card_title,
+        )
+        await server.broadcast(
+            {
+                "type": "agent.failed",
+                "study": info.study,
+                "task": info.task,
+                "card_id": info.card_id,
+                "error": info.error,
+            }
+        )
 
     except Exception as e:
         info.status = "failed"
@@ -1053,7 +1118,20 @@ async def _stream_monitor(info: DispatchInfo, server: DispatchHost) -> None:
             end_dt = datetime.fromisoformat(completed_at)
             duration = (end_dt - start_dt).total_seconds()
         try:
-            await _update_agent_card(info.card_id, info.study, server, {"status": "failed", "output": accumulated + f"\n\n---\n**Error:** {info.error}", "completed_at": completed_at, "duration": duration, "error": info.error, "usage": usage}, title=card_title)
+            await _update_agent_card(
+                info.card_id,
+                info.study,
+                server,
+                {
+                    "status": "failed",
+                    "output": accumulated + f"\n\n---\n**Error:** {info.error}",
+                    "completed_at": completed_at,
+                    "duration": duration,
+                    "error": info.error,
+                    "usage": usage,
+                },
+                title=card_title,
+            )
         except Exception:
             logger.debug("Failed to update card after monitor error")
 
@@ -1118,8 +1196,28 @@ async def cancel_agent(card_id: str, server: DispatchHost) -> bool:
         cancel_output = preserved + "\n\n---\n*Cancelled by user.*"
     else:
         cancel_output = "*Cancelled by user.*"
-    await _update_agent_card(card_id, info.study, server, {"status": "failed", "output": cancel_output, "completed_at": completed_at, "duration": duration, "error": "Cancelled by user"}, title=card_title)
-    await server.broadcast({"type": "agent.failed", "study": info.study, "task": info.task, "card_id": card_id, "error": "Cancelled by user"})
+    await _update_agent_card(
+        card_id,
+        info.study,
+        server,
+        {
+            "status": "failed",
+            "output": cancel_output,
+            "completed_at": completed_at,
+            "duration": duration,
+            "error": "Cancelled by user",
+        },
+        title=card_title,
+    )
+    await server.broadcast(
+        {
+            "type": "agent.failed",
+            "study": info.study,
+            "task": info.task,
+            "card_id": card_id,
+            "error": "Cancelled by user",
+        }
+    )
     return True
 
 
@@ -1226,7 +1324,32 @@ async def _dispatch_watchdog(server: DispatchHost) -> None:
                 duration = (end_dt - start_dt).total_seconds()
             config = _TASK_CONFIG.get(info.task, ("", "", ""))
             _, card_title, _ = config
-            output = info.accumulated_output + "\n\n---\n**Error:** Process exited unexpectedly"
-            await _update_agent_card(info.card_id, info.study, server, {"status": "failed", "output": output, "completed_at": completed_at, "duration": duration, "error": info.error}, title=card_title)
-            await server.broadcast({"type": "agent.failed", "study": info.study, "task": info.task, "card_id": info.card_id, "error": info.error})
-            logger.warning(f"Watchdog: agent {info.card_id} PID {info.pid} dead, marked failed")
+            output = (
+                info.accumulated_output
+                + "\n\n---\n**Error:** Process exited unexpectedly"
+            )
+            await _update_agent_card(
+                info.card_id,
+                info.study,
+                server,
+                {
+                    "status": "failed",
+                    "output": output,
+                    "completed_at": completed_at,
+                    "duration": duration,
+                    "error": info.error,
+                },
+                title=card_title,
+            )
+            await server.broadcast(
+                {
+                    "type": "agent.failed",
+                    "study": info.study,
+                    "task": info.task,
+                    "card_id": info.card_id,
+                    "error": info.error,
+                }
+            )
+            logger.warning(
+                f"Watchdog: agent {info.card_id} PID {info.pid} dead, marked failed"
+            )

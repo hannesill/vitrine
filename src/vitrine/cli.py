@@ -133,8 +133,7 @@ def restart(
     if info:
         if not json_output:
             _info(
-                f"Stopping server (pid={info.get('pid')}, "
-                f"port={info.get('port')})..."
+                f"Stopping server (pid={info.get('pid')}, port={info.get('port')})..."
             )
         if _stop_server(json_output):
             if not json_output:
@@ -151,9 +150,7 @@ def restart(
             _info("No running server found — starting fresh.")
 
     try:
-        started = _start_background(
-            port=port, no_open=no_open, json_output=json_output
-        )
+        started = _start_background(port=port, no_open=no_open, json_output=json_output)
     except _StartFailure as exc:
         if json_output:
             _emit_json(_lifecycle_payload("failed", error=str(exc)))
@@ -274,9 +271,7 @@ def studies() -> None:
         label = s.get("label", "?")
         start = s.get("start_time", "?")
         cards = s.get("card_count", 0)
-        console.print(
-            f"  [green]{label:<30s}[/green] {cards:>3d} cards   {start}"
-        )
+        console.print(f"  [green]{label:<30s}[/green] {cards:>3d} cards   {start}")
 
 
 @app.command()
@@ -298,8 +293,12 @@ def clean(
 @app.command()
 def export(
     path: str = typer.Argument(help="Output file path."),
-    format: str = typer.Option("html", "--format", "-f", help="Export format: 'html' or 'json'."),
-    study: str | None = typer.Option(None, "--study", help="Study label (default: all studies)."),
+    format: str = typer.Option(
+        "html", "--format", "-f", help="Export format: 'html' or 'json'."
+    ),
+    study: str | None = typer.Option(
+        None, "--study", help="Study label (default: all studies)."
+    ),
 ) -> None:
     """Export study/studies to file."""
     from vitrine import export as do_export
