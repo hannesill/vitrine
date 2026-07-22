@@ -26,6 +26,7 @@ import os
 import secrets
 import signal
 import socket
+import sys
 import threading
 import time
 import uuid
@@ -43,8 +44,7 @@ from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 from starlette.websockets import WebSocket
 
-from vitrine import routes_card, routes_study, routes_agent, ws_handlers
-
+from vitrine import routes_agent, routes_card, routes_study, ws_handlers
 from vitrine._types import CardDescriptor
 from vitrine.artifacts import ArtifactStore, _serialize_card
 from vitrine.dispatch import (
@@ -62,6 +62,17 @@ _STATIC_DIR = Path(__file__).parent / "static"
 _DEFAULT_PORT = 7741
 _MAX_PORT = 7750
 _DISPLAY_HOST = "vitrine.localhost"
+
+
+def _get_display_host() -> str:
+    """Return the host name used in browser-facing URLs."""
+    override = os.getenv("VITRINE_DISPLAY_HOST")
+    if override:
+        return override
+    # Windows does not consistently resolve localhost subdomains for browsers.
+    if sys.platform == "win32":
+        return "127.0.0.1"
+    return _DISPLAY_HOST
 
 
 def _check_health(url: str, session_id: str | None = None) -> bool:
@@ -479,7 +490,7 @@ class DisplayServer:
         import sys
 
         print(
-            f"vitrine: http://{_DISPLAY_HOST}:{self.port}",
+            f"vitrine: {self.url}",
             file=sys.stderr,
         )
 
@@ -487,7 +498,7 @@ class DisplayServer:
             try:
                 import webbrowser
 
-                webbrowser.open(f"http://{_DISPLAY_HOST}:{self.port}")
+                webbrowser.open(self.url)
             except Exception:
                 pass
 
@@ -572,8 +583,8 @@ class DisplayServer:
 
     @property
     def url(self) -> str:
-        """Return the server URL (using vitrine.localhost for display)."""
-        return f"http://{_DISPLAY_HOST}:{self.port}"
+        """Return the browser-facing server URL."""
+        return f"http://{_get_display_host()}:{self.port}"
 
     def push_card(self, card: CardDescriptor) -> None:
         """Push a card to all connected WebSocket clients.

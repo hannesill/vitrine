@@ -418,6 +418,48 @@ class TestServerLifecycle:
         assert captured["start_new_session"] is True
         assert "--no-open" in captured["cmd"]
 
+    def test_ensure_started_releases_lock_before_spawning(
+        self, monkeypatch, tmp_path
+    ):
+        """Parent must release the startup lock before the child tries to take it."""
+        events = []
+        discover_calls = 0
+
+        def fake_discover():
+            nonlocal discover_calls
+            discover_calls += 1
+            if discover_calls == 1:
+                return None
+            return {
+                "url": "http://127.0.0.1:7741",
+                "api_url": "http://127.0.0.1:7741",
+                "token": "tok",
+                "session_id": "sess",
+            }
+
+        def fake_lock(_fd):
+            events.append("lock")
+
+        def fake_unlock(_fd):
+            events.append("unlock")
+
+        def fake_start_process(**_kwargs):
+            assert events == ["lock", "unlock"]
+            events.append("start")
+
+        monkeypatch.setattr(_client_mod, "_ensure_study_manager", lambda: None)
+        monkeypatch.setattr(
+            _client_mod, "_lock_file_path", lambda: tmp_path / ".server.lock"
+        )
+        monkeypatch.setattr(_client_mod, "_discover_server", fake_discover)
+        monkeypatch.setattr("vitrine._utils.lock_file", fake_lock)
+        monkeypatch.setattr("vitrine._utils.unlock_file", fake_unlock)
+        monkeypatch.setattr(_client_mod, "_start_process", fake_start_process)
+
+        _client_mod._ensure_started(open_browser=False)
+
+        assert events == ["lock", "unlock", "start"]
+
 
 class TestClientMode:
     """Test that show/section push via HTTP when _remote_url is set.

@@ -11,16 +11,14 @@ import json
 import logging
 import os
 import shutil
-import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
-from vitrine._types import DisplayEvent
-
 # Shared mutable state — imported so client functions can read/write it
 import vitrine._state as _st
+from vitrine._types import DisplayEvent
 
 logger = logging.getLogger(__name__)
 
@@ -377,7 +375,9 @@ def _ensure_started(
         # Ensure study manager exists for local artifact storage
         _ensure_study_manager()
 
-        # Acquire cross-process file lock before discovery + start
+        # Acquire cross-process file lock before discovery. Release it before
+        # spawning so the child server can take the same lock deterministically.
+        should_start_process = False
         lock_path = _lock_file_path()
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with open(lock_path, "w") as lock_fd:
@@ -395,11 +395,16 @@ def _ensure_started(
                     _st._session_id = info["session_id"]
                     return
 
-                # No server found -> start a new persistent process
-                _start_process(port=port, open_browser=open_browser)
+                # No server found -> start a new persistent process after
+                # releasing the lock. The child will hold it until PID metadata
+                # is written, so concurrent clients will block and then discover.
+                should_start_process = True
 
             finally:
                 unlock_file(lock_fd)
+
+        if should_start_process:
+            _start_process(port=port, open_browser=open_browser)
 
         # Poll for the PID file to appear (server writes it after binding)
         deadline = time.monotonic() + 5.0
@@ -621,8 +626,8 @@ def _study_url(study: str | None) -> str | None:
     if url:
         return f"{url}/#study={quote(study, safe='')}"
     if server is not None:
-        from vitrine.server import _DISPLAY_HOST
+        from vitrine.server import _get_display_host
 
         port = getattr(server, "port", 7741)
-        return f"http://{_DISPLAY_HOST}:{port}/#study={quote(study, safe='')}"
+        return f"http://{_get_display_host()}:{port}/#study={quote(study, safe='')}"
     return None
