@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -223,6 +224,35 @@ def detached_popen_kwargs() -> dict[str, Any]:
         DETACHED_PROCESS = 0x00000008
         return {"creationflags": CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS}
     return {"start_new_session": True}
+
+
+def terminate_spawned_process(process: Any, timeout: float = 3.0) -> None:
+    """Terminate and reap exactly the child represented by ``process``.
+
+    The retained ``Popen`` handle is the authority. No PID-file process is
+    signalled, which avoids killing a concurrent or unrelated daemon.
+    """
+    returncode = process.poll()
+    if returncode is not None:
+        process.wait()
+        return
+
+    try:
+        process.terminate()
+    except OSError:
+        if process.poll() is None:
+            raise
+        process.wait()
+        return
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except OSError:
+            if process.poll() is None:
+                raise
+        process.wait(timeout=timeout)
 
 
 # ---------------------------------------------------------------------------

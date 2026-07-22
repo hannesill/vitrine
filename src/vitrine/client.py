@@ -365,7 +365,11 @@ def _ensure_started(
     5. Release lock
     6. Fallback in-thread server if polling fails
     """
-    from vitrine._utils import lock_file, unlock_file
+    from vitrine._utils import (
+        lock_file,
+        terminate_spawned_process,
+        unlock_file,
+    )
 
     with _st._lock:
         # Fast path: already connected to remote
@@ -412,19 +416,42 @@ def _ensure_started(
             finally:
                 unlock_file(lock_fd)
 
+        spawned_process = None
         if should_start_process:
-            _start_process(port=port, open_browser=open_browser)
+            spawned_process = _start_process(port=port, open_browser=open_browser)
 
         # Poll for the PID file to appear (server writes it after binding)
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
-            info = _discover_server()
+            try:
+                info = _discover_server()
+            except Exception:
+                if spawned_process is not None:
+                    terminate_spawned_process(spawned_process)
+                raise
             if info:
+                spawned_pid = getattr(spawned_process, "pid", None)
+                if (
+                    spawned_process is not None
+                    and type(spawned_pid) is int
+                    and info["pid"] != spawned_pid
+                ):
+                    terminate_spawned_process(spawned_process)
                 _st._remote_url = info.get("api_url", info["url"])
                 _st._auth_token = info.get("token")
                 _st._session_id = info["session_id"]
                 return
+            if spawned_process is not None:
+                returncode = spawned_process.poll()
+                if isinstance(returncode, int):
+                    terminate_spawned_process(spawned_process)
+                    spawned_process = None
+                    if returncode != 0:
+                        break
             time.sleep(0.1)
+
+        if spawned_process is not None:
+            terminate_spawned_process(spawned_process)
 
         # Fallback: start in-thread if process discovery failed
         logger.debug("Process discovery failed, falling back to in-thread server")
@@ -459,7 +486,7 @@ def start(
         _ensure_started(port=port, open_browser=open_browser)
 
 
-def _start_process(port: int = 7741, open_browser: bool = True) -> None:
+def _start_process(port: int = 7741, open_browser: bool = True) -> Any:
     """Start the display server as a separate process."""
     import subprocess
     import sys
@@ -476,7 +503,7 @@ def _start_process(port: int = 7741, open_browser: bool = True) -> None:
 
     from vitrine._utils import detached_popen_kwargs
 
-    subprocess.Popen(
+    return subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

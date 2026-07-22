@@ -334,7 +334,11 @@ def _start_background(
     if no_open:
         cmd.append("--no-open")
 
-    from vitrine._utils import detached_popen_kwargs
+    from vitrine._utils import (
+        ServerMetadataError,
+        detached_popen_kwargs,
+        terminate_spawned_process,
+    )
 
     if not json_output:
         _info(f"Starting vitrine server on port {port}...")
@@ -351,29 +355,51 @@ def _start_background(
             _error(message)
         raise _StartFailure(message) from exc
 
-    # Wait for server to come up
+    # Wait for server to come up. Keep the Popen handle so failures can only
+    # signal and reap the exact child created above.
     from vitrine import server_status
 
+    process_reaped = False
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
-        info = server_status()
+        try:
+            info = server_status()
+        except ServerMetadataError as exc:
+            if not process_reaped:
+                terminate_spawned_process(process)
+            raise _StartFailure(str(exc)) from exc
         if info:
+            spawned_pid = getattr(process, "pid", None)
+            running_pid = info.get("pid")
+            if (
+                type(spawned_pid) is int
+                and type(running_pid) is int
+                and spawned_pid != running_pid
+                and not process_reaped
+            ):
+                terminate_spawned_process(process)
             if not json_output:
                 _success(
                     f"Server started (pid={info.get('pid')}, url={info.get('url')})"
                 )
             return info
         returncode = process.poll()
-        if isinstance(returncode, int) and returncode != 0:
-            message = (
-                "Vitrine server exited before becoming healthy "
-                f"(exit code {returncode})."
-            )
-            if not json_output:
-                _error(message)
-            raise _StartFailure(message)
+        if isinstance(returncode, int):
+            if not process_reaped:
+                terminate_spawned_process(process)
+                process_reaped = True
+            if returncode != 0:
+                message = (
+                    "Vitrine server exited before becoming healthy "
+                    f"(exit code {returncode})."
+                )
+                if not json_output:
+                    _error(message)
+                raise _StartFailure(message)
         time.sleep(0.2)
 
+    if not process_reaped:
+        terminate_spawned_process(process)
     message = "Server process started but didn't become healthy within 5s."
     if not json_output:
         _error(message)
