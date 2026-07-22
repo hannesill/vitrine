@@ -30,6 +30,23 @@ from vitrine.artifacts import ArtifactStore
 from vitrine.study_manager import StudyManager
 
 
+def _server_metadata(pid_path, **overrides):
+    """Build current lifecycle metadata owned by ``pid_path.parent``."""
+    info = {
+        "pid": os.getpid(),
+        "port": 7741,
+        "host": "127.0.0.1",
+        "url": "http://vitrine.localhost:7741",
+        "api_url": "http://127.0.0.1:7741",
+        "session_id": "session",
+        "token": "token",
+        "data_dir": str(pid_path.parent.resolve()),
+        "version": "0.1.0",
+    }
+    info.update(overrides)
+    return info
+
+
 @pytest.fixture(autouse=True)
 def reset_module_state():
     """Reset module-level state before each test."""
@@ -233,13 +250,16 @@ class TestDiscovery:
         result = _client_mod._discover_server()
         assert result is None
 
-    def test_discover_removes_malformed_pid_file(self, monkeypatch, tmp_path):
+    def test_discover_rejects_malformed_pid_file(self, monkeypatch, tmp_path):
+        from vitrine._utils import ServerMetadataError
+
         pid_path = tmp_path / ".server.json"
         pid_path.write_text("{not-json")
         monkeypatch.setattr(_client_mod, "_pid_file_path", lambda: pid_path)
 
-        assert _client_mod._discover_server() is None
-        assert not pid_path.exists()
+        with pytest.raises(ServerMetadataError, match="invalid JSON"):
+            _client_mod._discover_server()
+        assert pid_path.exists()
 
     @pytest.mark.parametrize(
         ("field", "value"),
@@ -249,41 +269,86 @@ class TestDiscovery:
             ("port", "7741"),
             ("port", 0),
             ("session_id", None),
+            ("token", ""),
             ("url", None),
             ("host", None),
+            ("host", "example.com"),
+            ("api_url", "http://example.com:7741"),
         ],
     )
-    def test_discover_removes_invalid_pid_fields(
+    def test_discover_rejects_invalid_pid_fields_before_pid_probe(
         self, monkeypatch, tmp_path, field, value
     ):
-        info = {
-            "pid": os.getpid(),
-            "port": 7741,
-            "host": "127.0.0.1",
-            "url": "http://vitrine.localhost:7741",
-            "session_id": "session",
-        }
-        info[field] = value
+        from vitrine._utils import ServerMetadataError
+
         pid_path = tmp_path / ".server.json"
+        pid_path.write_text(json.dumps(_server_metadata(pid_path, **{field: value})))
+        monkeypatch.setattr(_client_mod, "_pid_file_path", lambda: pid_path)
+        monkeypatch.setattr(
+            _client_mod,
+            "_is_process_alive",
+            lambda _pid: pytest.fail("PID probe must not run"),
+        )
+
+        with pytest.raises(ServerMetadataError):
+            _client_mod._discover_server()
+        assert pid_path.exists()
+
+    def test_discover_rejects_wrong_project_before_pid_probe(
+        self, monkeypatch, tmp_path
+    ):
+        from vitrine._utils import ServerMetadataError
+
+        pid_path = tmp_path / "project-a" / ".server.json"
+        pid_path.parent.mkdir()
+        pid_path.write_text(
+            json.dumps(
+                _server_metadata(
+                    pid_path,
+                    data_dir=str((tmp_path / "project-b").resolve()),
+                )
+            )
+        )
+        monkeypatch.setattr(_client_mod, "_pid_file_path", lambda: pid_path)
+        monkeypatch.setattr(
+            _client_mod,
+            "_is_process_alive",
+            lambda _pid: pytest.fail("PID probe must not run"),
+        )
+
+        with pytest.raises(ServerMetadataError, match="project directory"):
+            _client_mod._discover_server()
+
+    def test_discover_legacy_metadata_requires_restart_without_pid_probe(
+        self, monkeypatch, tmp_path
+    ):
+        from vitrine._utils import ServerRestartRequired
+
+        pid_path = tmp_path / ".server.json"
+        info = _server_metadata(pid_path)
+        for field in ("api_url", "data_dir", "version"):
+            info.pop(field)
         pid_path.write_text(json.dumps(info))
         monkeypatch.setattr(_client_mod, "_pid_file_path", lambda: pid_path)
+        monkeypatch.setattr(
+            _client_mod,
+            "_is_process_alive",
+            lambda _pid: pytest.fail("PID probe must not run"),
+        )
 
-        assert _client_mod._discover_server() is None
-        assert not pid_path.exists()
+        with pytest.raises(ServerRestartRequired, match="restart required"):
+            _client_mod._discover_server()
 
     def test_discover_stale_pid(self, monkeypatch, tmp_path):
         """Discovery cleans up PID file when process is dead."""
         pid_path = tmp_path / ".server.json"
         pid_path.write_text(
             json.dumps(
-                {
-                    "pid": 999999999,  # Very unlikely to be a real PID
-                    "port": 7741,
-                    "host": "127.0.0.1",
-                    "url": "http://127.0.0.1:7741",
-                    "session_id": "dead-session",
-                    "token": "tok",
-                }
+                _server_metadata(
+                    pid_path,
+                    pid=999999999,
+                    session_id="dead-session",
+                )
             )
         )
         monkeypatch.setattr(_client_mod, "_pid_file_path", lambda: pid_path)
@@ -293,49 +358,78 @@ class TestDiscovery:
         assert result is None
         assert not pid_path.exists()
 
-    def test_discover_health_check_fails(self, monkeypatch, tmp_path):
-        """Discovery cleans up PID file when health check fails."""
+    def test_discover_alive_pid_health_mismatch_fails_closed(
+        self, monkeypatch, tmp_path
+    ):
+        """An alive PID with mismatched health retains its identity handle."""
+        from vitrine._utils import ServerMetadataError
+
         pid_path = tmp_path / ".server.json"
         pid_path.write_text(
-            json.dumps(
-                {
-                    "pid": os.getpid(),
-                    "port": 7741,
-                    "host": "127.0.0.1",
-                    "url": "http://127.0.0.1:7741",
-                    "session_id": "bad-session",
-                    "token": "tok",
-                }
-            )
+            json.dumps(_server_metadata(pid_path, session_id="bad-session"))
         )
         monkeypatch.setattr(_client_mod, "_pid_file_path", lambda: pid_path)
         monkeypatch.setattr(_client_mod, "_is_process_alive", lambda pid: True)
-        monkeypatch.setattr(_client_mod, "_health_check", lambda url, sid: False)
+        monkeypatch.setattr(_client_mod, "_health_check", lambda *_args: False)
 
-        result = _client_mod._discover_server()
-        assert result is None
-        assert not pid_path.exists()
+        with pytest.raises(ServerMetadataError, match="Refusing to discard metadata"):
+            _client_mod._discover_server()
+        assert pid_path.exists()
+
+    def test_ensure_started_does_not_spawn_after_alive_pid_health_mismatch(
+        self, monkeypatch, tmp_path
+    ):
+        from vitrine._utils import ServerMetadataError
+
+        pid_path = tmp_path / ".server.json"
+        pid_path.write_text(json.dumps(_server_metadata(pid_path)))
+        monkeypatch.setattr(_client_mod, "_pid_file_path", lambda: pid_path)
+        monkeypatch.setattr(
+            _client_mod, "_lock_file_path", lambda: tmp_path / ".server.lock"
+        )
+        monkeypatch.setattr(_client_mod, "_ensure_study_manager", lambda: None)
+        monkeypatch.setattr(_client_mod, "_is_process_alive", lambda _pid: True)
+        monkeypatch.setattr(_client_mod, "_health_check", lambda *_args: False)
+        monkeypatch.setattr(
+            _client_mod,
+            "_start_process",
+            lambda **_kwargs: pytest.fail("must not spawn a second daemon"),
+        )
+
+        with pytest.raises(ServerMetadataError, match="start a second daemon"):
+            _client_mod._ensure_started(open_browser=False)
+        assert pid_path.exists()
 
     def test_discover_valid_server(self, monkeypatch, tmp_path):
         """Discovery returns info when process alive and health check passes."""
-        info = {
-            "pid": os.getpid(),
-            "port": 7741,
-            "host": "127.0.0.1",
-            "url": "http://127.0.0.1:7741",
-            "session_id": "valid-session",
-            "token": "secret-tok",
-        }
         pid_path = tmp_path / ".server.json"
+        info = _server_metadata(
+            pid_path,
+            session_id="valid-session",
+            token="secret-tok",
+        )
         pid_path.write_text(json.dumps(info))
         monkeypatch.setattr(_client_mod, "_pid_file_path", lambda: pid_path)
         monkeypatch.setattr(_client_mod, "_is_process_alive", lambda pid: True)
-        monkeypatch.setattr(_client_mod, "_health_check", lambda url, sid: True)
+        health_args = []
+        monkeypatch.setattr(
+            _client_mod,
+            "_health_check",
+            lambda *args: health_args.append(args) or True,
+        )
 
         result = _client_mod._discover_server()
         assert result is not None
         assert result["session_id"] == "valid-session"
         assert result["token"] == "secret-tok"
+        assert health_args == [
+            (
+                "http://127.0.0.1:7741",
+                "valid-session",
+                "0.1.0",
+                str(tmp_path.resolve()),
+            )
+        ]
 
     def test_is_process_alive_current_pid(self):
         """Current process should be alive."""
@@ -374,9 +468,11 @@ class TestServerLifecycle:
                 "session_id": "sess-1",
                 "token": "tok",
                 "pid": None,
+                "version": "0.1.0",
+                "data_dir": str(tmp_path.resolve()),
             },
         )
-        monkeypatch.setattr(_client_mod, "_health_check", lambda url, sid: True)
+        monkeypatch.setattr(_client_mod, "_health_check", lambda *_args: True)
 
         import urllib.request
 
@@ -401,9 +497,11 @@ class TestServerLifecycle:
                 "session_id": "sess-1",
                 "token": "tok",
                 "pid": None,
+                "version": "0.1.0",
+                "data_dir": str(tmp_path.resolve()),
             },
         )
-        monkeypatch.setattr(_client_mod, "_health_check", lambda url, sid: False)
+        monkeypatch.setattr(_client_mod, "_health_check", lambda *_args: False)
 
         import urllib.request
 

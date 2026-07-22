@@ -7,11 +7,141 @@ and file-type constants.
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import os
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
+
+SERVER_BIND_HOST = "127.0.0.1"
+SUPPORTED_DISPLAY_HOSTS: frozenset[str] = frozenset(
+    {
+        SERVER_BIND_HOST,
+        "localhost",
+        "vitrine.localhost",
+    }
+)
+
+
+class ServerMetadataError(RuntimeError):
+    """Raised when persistent server metadata cannot be trusted."""
+
+
+class ServerRestartRequired(ServerMetadataError):
+    """Raised when metadata predates the current lifecycle contract."""
+
+
+def package_version() -> str:
+    """Return the installed Vitrine package version."""
+    try:
+        return importlib.metadata.version("vitrine")
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
+
+
+def _metadata_error(pid_path: Path, detail: str) -> ServerMetadataError:
+    return ServerMetadataError(f"Invalid server metadata at {pid_path}: {detail}")
+
+
+def _require_nonempty_string(info: dict[str, Any], key: str, pid_path: Path) -> str:
+    value = info.get(key)
+    if not isinstance(value, str) or not value:
+        raise _metadata_error(pid_path, f"{key} must be a non-empty string")
+    return value
+
+
+def load_server_metadata(pid_path: Path) -> dict[str, Any]:
+    """Read and strictly validate a project's persistent server metadata.
+
+    Validation happens before callers probe a PID or make an HTTP request.
+    Only the fixed loopback API origin and the metadata file's own project
+    directory are accepted. Older metadata lacks enough information to prove
+    daemon version and project ownership, so it requires a manual restart.
+    """
+    try:
+        raw = json.loads(pid_path.read_text())
+    except json.JSONDecodeError as exc:
+        raise _metadata_error(pid_path, "invalid JSON") from exc
+    except OSError as exc:
+        raise _metadata_error(pid_path, str(exc)) from exc
+
+    if not isinstance(raw, dict):
+        raise _metadata_error(pid_path, "top-level value must be an object")
+    info: dict[str, Any] = raw
+
+    pid = info.get("pid")
+    if type(pid) is not int or pid <= 0:
+        raise _metadata_error(pid_path, "pid must be a positive integer")
+
+    port = info.get("port")
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise _metadata_error(pid_path, "port must be an integer from 1 to 65535")
+
+    host = _require_nonempty_string(info, "host", pid_path)
+    if host != SERVER_BIND_HOST:
+        raise _metadata_error(pid_path, f"host must be {SERVER_BIND_HOST}")
+
+    _require_nonempty_string(info, "session_id", pid_path)
+    _require_nonempty_string(info, "token", pid_path)
+
+    url = _require_nonempty_string(info, "url", pid_path)
+    try:
+        parsed_url = urlsplit(url)
+        display_host = parsed_url.hostname
+        display_port = parsed_url.port
+    except ValueError as exc:
+        raise _metadata_error(pid_path, "url is malformed") from exc
+    expected_url = (
+        f"http://{display_host}:{port}"
+        if display_host in SUPPORTED_DISPLAY_HOSTS
+        else None
+    )
+    if (
+        parsed_url.scheme != "http"
+        or display_port != port
+        or parsed_url.username is not None
+        or parsed_url.password is not None
+        or parsed_url.path != ""
+        or parsed_url.query != ""
+        or parsed_url.fragment != ""
+        or url != expected_url
+    ):
+        raise _metadata_error(
+            pid_path, "url must be an exact supported loopback origin"
+        )
+
+    current_fields = ("api_url", "data_dir", "version")
+    missing = [field for field in current_fields if field not in info]
+    if missing:
+        fields = ", ".join(missing)
+        raise ServerRestartRequired(
+            "Server restart required: metadata predates the managed lifecycle "
+            f"contract (missing {fields}) at {pid_path}"
+        )
+
+    api_url = _require_nonempty_string(info, "api_url", pid_path)
+    expected_api_url = f"http://{SERVER_BIND_HOST}:{port}"
+    if api_url != expected_api_url:
+        raise _metadata_error(pid_path, f"api_url must be {expected_api_url}")
+
+    data_dir = _require_nonempty_string(info, "data_dir", pid_path)
+    data_path = Path(data_dir)
+    if not data_path.is_absolute() or data_path.resolve() != pid_path.parent.resolve():
+        raise _metadata_error(
+            pid_path, "data_dir must match the metadata file's project directory"
+        )
+
+    version = _require_nonempty_string(info, "version", pid_path)
+    if version == "unknown":
+        raise ServerRestartRequired(
+            "Server restart required: daemon version is unknown in metadata "
+            f"at {pid_path}"
+        )
+
+    return info
+
 
 # ---------------------------------------------------------------------------
 # PID check
@@ -141,8 +271,14 @@ def duckdb_safe_path(path: Path | str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def health_check(url: str, session_id: str | None = None) -> bool:
-    """GET /api/health and optionally validate session_id matches."""
+def health_check(
+    url: str,
+    session_id: str | None = None,
+    *,
+    version: str | None = None,
+    data_dir: str | None = None,
+) -> bool:
+    """GET /api/health and optionally validate daemon identity."""
     try:
         import urllib.request
 
@@ -151,8 +287,12 @@ def health_check(url: str, session_id: str | None = None) -> bool:
             data = json.loads(resp.read())
             if data.get("status") != "ok":
                 return False
-            if session_id is not None:
-                return data.get("session_id") == session_id
+            if session_id is not None and data.get("session_id") != session_id:
+                return False
+            if version is not None and data.get("version") != version:
+                return False
+            if data_dir is not None and data.get("data_dir") != data_dir:
+                return False
             return True
     except Exception:
         return False
