@@ -19,6 +19,7 @@ _STATIC_DIR = None  # Set at import time below
 
 def _get_static_dir():
     from pathlib import Path
+
     return Path(__file__).parent / "static"
 
 
@@ -75,13 +76,12 @@ async def api_card_delete(server: DisplayServer, request: Request) -> JSONRespon
 
     if deleted and card_id in server.dispatches:
         from vitrine.dispatch import cancel_agent
+
         await cancel_agent(card_id, server)
 
     store = server._resolve_store(card_id)
     if store is None:
-        return JSONResponse(
-            {"error": f"Card {card_id} not found"}, status_code=404
-        )
+        return JSONResponse({"error": f"Card {card_id} not found"}, status_code=404)
 
     updates: dict[str, Any] = {"deleted": deleted}
     if deleted:
@@ -98,9 +98,7 @@ async def api_card_delete(server: DisplayServer, request: Request) -> JSONRespon
             }
         )
         return JSONResponse({"status": "ok"})
-    return JSONResponse(
-        {"error": f"Card {card_id} not found"}, status_code=404
-    )
+    return JSONResponse({"error": f"Card {card_id} not found"}, status_code=404)
 
 
 async def api_table(server: DisplayServer, request: Request) -> JSONResponse:
@@ -143,15 +141,11 @@ async def api_table_selection(server: DisplayServer, request: Request) -> JSONRe
 
     store = server._resolve_store(card_id)
     if store is None:
-        return JSONResponse(
-            {"selected_indices": indices, "columns": [], "rows": []}
-        )
+        return JSONResponse({"selected_indices": indices, "columns": [], "rows": []})
 
     path = store._artifacts_dir / f"{card_id}.parquet"
     if not path.exists():
-        return JSONResponse(
-            {"selected_indices": indices, "columns": [], "rows": []}
-        )
+        return JSONResponse({"selected_indices": indices, "columns": [], "rows": []})
 
     try:
         import duckdb
@@ -179,9 +173,7 @@ async def api_table_selection(server: DisplayServer, request: Request) -> JSONRe
             {"selected_indices": indices, "columns": columns, "rows": rows}
         )
     except Exception:
-        return JSONResponse(
-            {"selected_indices": indices, "columns": [], "rows": []}
-        )
+        return JSONResponse({"selected_indices": indices, "columns": [], "rows": []})
 
 
 async def api_table_stats(server: DisplayServer, request: Request) -> JSONResponse:
@@ -274,9 +266,7 @@ async def api_session(server: DisplayServer, request: Request) -> JSONResponse:
         if meta_path.exists():
             meta = json.loads(meta_path.read_text())
             return JSONResponse(meta)
-        return JSONResponse(
-            {"session_id": server.store.session_id, "study_names": []}
-        )
+        return JSONResponse({"session_id": server.store.session_id, "study_names": []})
     return JSONResponse({"session_id": server.session_id, "study_names": []})
 
 
@@ -347,9 +337,7 @@ async def api_command(server: DisplayServer, request: Request) -> JSONResponse:
         await server.broadcast(message)
         return JSONResponse({"status": "ok"})
 
-    return JSONResponse(
-        {"error": f"unknown command type: {cmd_type}"}, status_code=400
-    )
+    return JSONResponse({"error": f"unknown command type: {cmd_type}"}, status_code=400)
 
 
 async def api_shutdown(server: DisplayServer, request: Request) -> JSONResponse:

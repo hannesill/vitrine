@@ -424,11 +424,13 @@ class TestParseGeminiEvent:
         assert "read_file" in text
 
     def test_result_event_with_usage(self):
-        event = json.dumps({
-            "type": "result",
-            "text": "Done.",
-            "usage": {"input_tokens": 100, "output_tokens": 50, "cost_usd": 0.01},
-        })
+        event = json.dumps(
+            {
+                "type": "result",
+                "text": "Done.",
+                "usage": {"input_tokens": 100, "output_tokens": 50, "cost_usd": 0.01},
+            }
+        )
         kind, text, usage = _parse_gemini_event(event)
         assert kind == "result"
         assert text == "Done."
@@ -473,14 +475,16 @@ class TestParseCodexEvent:
         assert text == "Hello from Codex"
 
     def test_message_with_list_content(self):
-        event = json.dumps({
-            "type": "message",
-            "content": [
-                {"type": "text", "text": "Part A. "},
-                {"type": "text", "text": "Part B."},
-                {"type": "image", "url": "http://x"},
-            ],
-        })
+        event = json.dumps(
+            {
+                "type": "message",
+                "content": [
+                    {"type": "text", "text": "Part A. "},
+                    {"type": "text", "text": "Part B."},
+                    {"type": "image", "url": "http://x"},
+                ],
+            }
+        )
         kind, text, _usage = _parse_codex_event(event)
         assert kind == "text"
         assert text == "Part A. Part B."
@@ -492,11 +496,13 @@ class TestParseCodexEvent:
         assert "bash" in text
 
     def test_result_event(self):
-        event = json.dumps({
-            "type": "result",
-            "output": "All done.",
-            "usage": {"input_tokens": 200, "output_tokens": 80, "cost_usd": 0.05},
-        })
+        event = json.dumps(
+            {
+                "type": "result",
+                "output": "All done.",
+                "usage": {"input_tokens": 200, "output_tokens": 80, "cost_usd": 0.05},
+            }
+        )
         kind, text, usage = _parse_codex_event(event)
         assert kind == "result"
         assert text == "All done."

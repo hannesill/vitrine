@@ -86,18 +86,36 @@ server_status = _client.server_status
 # attribute-set pattern which works because __getattr__ returns _state attrs).
 
 _STATE_ATTRS = {
-    "_lock", "_server", "_store", "_study_manager", "_session_id",
-    "_remote_url", "_auth_token", "_event_callbacks", "_event_poll_thread",
+    "_lock",
+    "_server",
+    "_store",
+    "_study_manager",
+    "_session_id",
+    "_remote_url",
+    "_auth_token",
+    "_event_callbacks",
+    "_event_poll_thread",
     "_event_poll_stop",
 }
 
 _CLIENT_ATTRS = {
-    "_get_vitrine_dir", "_migrate_if_needed", "_pid_file_path",
-    "_lock_file_path", "_is_process_alive", "_health_check",
-    "_discover_server", "_remote_command", "_push_remote",
-    "_poll_remote_response", "_poll_remote_events", "_get_session_dir",
-    "_ensure_study_manager", "_ensure_started", "_start_process",
-    "_wait_for_card_response", "_study_url",
+    "_get_vitrine_dir",
+    "_migrate_if_needed",
+    "_pid_file_path",
+    "_lock_file_path",
+    "_is_process_alive",
+    "_health_check",
+    "_discover_server",
+    "_remote_command",
+    "_push_remote",
+    "_poll_remote_response",
+    "_poll_remote_events",
+    "_get_session_dir",
+    "_ensure_study_manager",
+    "_ensure_started",
+    "_start_process",
+    "_wait_for_card_response",
+    "_study_url",
 }
 
 
@@ -781,7 +799,9 @@ def on_event(callback: Any) -> None:
     elif url is not None:
         # Remote server: start polling thread if not already running
         with _st._lock:
-            need_start = _st._event_poll_thread is None or not _st._event_poll_thread.is_alive()
+            need_start = (
+                _st._event_poll_thread is None or not _st._event_poll_thread.is_alive()
+            )
             if need_start:
                 _st._event_poll_stop.clear()
                 _st._event_poll_thread = threading.Thread(

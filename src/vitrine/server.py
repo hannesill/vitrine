@@ -223,34 +223,86 @@ class DisplayServer:
             Route("/", _r(routes_card.index)),
             Route("/api/health", _r(routes_card.api_health)),
             Route("/api/cards", _r(routes_card.api_cards)),
-            Route("/api/table/{card_id}/selection", _r(routes_card.api_table_selection)),
+            Route(
+                "/api/table/{card_id}/selection", _r(routes_card.api_table_selection)
+            ),
             Route("/api/table/{card_id}/stats", _r(routes_card.api_table_stats)),
             Route("/api/table/{card_id}/export", _r(routes_card.api_table_export)),
             Route("/api/table/{card_id}", _r(routes_card.api_table)),
             Route("/api/card/{card_id}", _r(routes_card.api_card)),
-            Route("/api/card/{card_id}/delete", _r(routes_card.api_card_delete), methods=["POST"]),
+            Route(
+                "/api/card/{card_id}/delete",
+                _r(routes_card.api_card_delete),
+                methods=["POST"],
+            ),
             Route("/api/artifact/{card_id}", _r(routes_card.api_artifact)),
             Route("/api/session", _r(routes_card.api_session)),
             Route("/api/command", _r(routes_card.api_command), methods=["POST"]),
             Route("/api/shutdown", _r(routes_card.api_shutdown), methods=["POST"]),
-            Route("/api/response/{card_id}", _r(routes_card.api_response), methods=["GET"]),
+            Route(
+                "/api/response/{card_id}", _r(routes_card.api_response), methods=["GET"]
+            ),
             Route("/api/events", _r(routes_card.api_events), methods=["GET"]),
             # Study endpoints
             Route("/api/studies", _r(routes_study.api_studies), methods=["GET"]),
-            Route("/api/studies/{study:path}/rename", _r(routes_study.api_study_rename), methods=["PATCH"]),
-            Route("/api/studies/{study:path}/context", _r(routes_study.api_study_context), methods=["GET"]),
-            Route("/api/studies/{study:path}/export", _r(routes_study.api_study_export), methods=["GET"]),
-            Route("/api/studies/{study:path}/files", _r(routes_study.api_study_files), methods=["GET"]),
-            Route("/api/studies/{study:path}/files-archive", _r(routes_study.api_study_files_archive), methods=["GET"]),
-            Route("/api/studies/{study:path}/files/{filepath:path}", _r(routes_study.api_study_file), methods=["GET"]),
+            Route(
+                "/api/studies/{study:path}/rename",
+                _r(routes_study.api_study_rename),
+                methods=["PATCH"],
+            ),
+            Route(
+                "/api/studies/{study:path}/context",
+                _r(routes_study.api_study_context),
+                methods=["GET"],
+            ),
+            Route(
+                "/api/studies/{study:path}/export",
+                _r(routes_study.api_study_export),
+                methods=["GET"],
+            ),
+            Route(
+                "/api/studies/{study:path}/files",
+                _r(routes_study.api_study_files),
+                methods=["GET"],
+            ),
+            Route(
+                "/api/studies/{study:path}/files-archive",
+                _r(routes_study.api_study_files_archive),
+                methods=["GET"],
+            ),
+            Route(
+                "/api/studies/{study:path}/files/{filepath:path}",
+                _r(routes_study.api_study_file),
+                methods=["GET"],
+            ),
             # Agent endpoints
-            Route("/api/studies/{study:path}/agents", _r(routes_agent.api_create_agent), methods=["POST"]),
-            Route("/api/agents/{card_id}/run", _r(routes_agent.api_run_agent), methods=["POST"]),
-            Route("/api/agents/{card_id}", _r(routes_agent.api_agent_handler), methods=["GET", "DELETE"]),
+            Route(
+                "/api/studies/{study:path}/agents",
+                _r(routes_agent.api_create_agent),
+                methods=["POST"],
+            ),
+            Route(
+                "/api/agents/{card_id}/run",
+                _r(routes_agent.api_run_agent),
+                methods=["POST"],
+            ),
+            Route(
+                "/api/agents/{card_id}",
+                _r(routes_agent.api_agent_handler),
+                methods=["GET", "DELETE"],
+            ),
             # Study delete & global export
-            Route("/api/studies/{study:path}", _r(routes_study.api_study_delete), methods=["DELETE"]),
+            Route(
+                "/api/studies/{study:path}",
+                _r(routes_study.api_study_delete),
+                methods=["DELETE"],
+            ),
             Route("/api/export", _r(routes_study.api_export), methods=["GET"]),
-            Route("/api/files-archive", _r(routes_study.api_all_files_archive), methods=["GET"]),
+            Route(
+                "/api/files-archive",
+                _r(routes_study.api_all_files_archive),
+                methods=["GET"],
+            ),
             # WebSocket
             WebSocketRoute("/ws", _r(ws_handlers.ws_endpoint)),
         ]

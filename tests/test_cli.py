@@ -69,9 +69,7 @@ class TestStatusCommand:
         assert result.exit_code == 0
         assert result.output == "> No running server found.\n"
 
-    def test_status_json_running_has_stable_safe_shape(
-        self, monkeypatch, tmp_path
-    ):
+    def test_status_json_running_has_stable_safe_shape(self, monkeypatch, tmp_path):
         data_dir = tmp_path / "project" / ".vitrine"
         monkeypatch.setenv("VITRINE_DATA_DIR", str(data_dir))
 
@@ -121,9 +119,7 @@ class TestStatusCommand:
         assert payload["pid"] is None
         assert payload["error"] is None
 
-    def test_status_json_tracks_explicit_data_directory(
-        self, monkeypatch, tmp_path
-    ):
+    def test_status_json_tracks_explicit_data_directory(self, monkeypatch, tmp_path):
         with patch("vitrine.server_status", return_value=None):
             directories = []
             for project in ("a", "b"):

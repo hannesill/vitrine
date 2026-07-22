@@ -786,7 +786,11 @@ class StudyManager:
             for entry in entries:
                 if entry.name.startswith("."):
                     continue
-                rel = f"{rel_prefix}{entry.name}" if not rel_prefix else f"{rel_prefix}/{entry.name}"
+                rel = (
+                    f"{rel_prefix}{entry.name}"
+                    if not rel_prefix
+                    else f"{rel_prefix}/{entry.name}"
+                )
                 is_dir = entry.is_dir(follow_symlinks=False)
                 ext = os.path.splitext(entry.name)[1].lower()
                 ftype = "directory" if is_dir else _EXT_TYPES.get(ext, "other")

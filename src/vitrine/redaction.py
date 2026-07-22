@@ -68,9 +68,7 @@ class Redactor:
             self.max_rows = max_rows
         else:
             try:
-                self.max_rows = int(
-                    _env("MAX_ROWS") or str(_DEFAULT_MAX_ROWS)
-                )
+                self.max_rows = int(_env("MAX_ROWS") or str(_DEFAULT_MAX_ROWS))
             except ValueError:
                 self.max_rows = _DEFAULT_MAX_ROWS
 
