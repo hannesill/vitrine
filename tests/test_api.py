@@ -592,6 +592,102 @@ class TestServerLifecycle:
 
         assert events == ["lock", "unlock", "start"]
 
+    def test_ensure_started_terminates_spawned_child_before_timeout_fallback(
+        self, monkeypatch, tmp_path
+    ):
+        events = []
+
+        class FakeProcess:
+            pid = 12345
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                events.append("terminate")
+
+            def wait(self, timeout=None):
+                events.append(("wait", timeout))
+                return 0
+
+            def kill(self):
+                events.append("kill")
+
+        class FakeServer:
+            is_running = False
+
+            def __init__(self, **_kwargs):
+                events.append("fallback-created")
+
+            def start(self, **_kwargs):
+                events.append("fallback-started")
+                self.is_running = True
+
+        monkeypatch.setattr(_client_mod, "_ensure_study_manager", lambda: None)
+        monkeypatch.setattr(
+            _client_mod, "_lock_file_path", lambda: tmp_path / ".server.lock"
+        )
+        monkeypatch.setattr(_client_mod, "_discover_server", lambda: None)
+        monkeypatch.setattr(
+            _client_mod, "_start_process", lambda **_kwargs: FakeProcess()
+        )
+        clock = iter([0.0, 6.0])
+        monkeypatch.setattr(_client_mod.time, "monotonic", lambda: next(clock))
+        monkeypatch.setattr("vitrine.server.DisplayServer", FakeServer)
+
+        _client_mod._ensure_started(open_browser=False)
+
+        assert events == [
+            "terminate",
+            ("wait", 3.0),
+            "fallback-created",
+            "fallback-started",
+        ]
+
+    def test_ensure_started_reaps_early_failed_child_before_fallback(
+        self, monkeypatch, tmp_path
+    ):
+        events = []
+
+        class FakeProcess:
+            pid = 12345
+
+            def poll(self):
+                return 7
+
+            def wait(self, timeout=None):
+                events.append(("wait", timeout))
+                return 7
+
+        class FakeServer:
+            is_running = False
+
+            def __init__(self, **_kwargs):
+                events.append("fallback-created")
+
+            def start(self, **_kwargs):
+                events.append("fallback-started")
+                self.is_running = True
+
+        monkeypatch.setattr(_client_mod, "_ensure_study_manager", lambda: None)
+        monkeypatch.setattr(
+            _client_mod, "_lock_file_path", lambda: tmp_path / ".server.lock"
+        )
+        monkeypatch.setattr(_client_mod, "_discover_server", lambda: None)
+        monkeypatch.setattr(
+            _client_mod, "_start_process", lambda **_kwargs: FakeProcess()
+        )
+        monkeypatch.setattr(_client_mod.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr("vitrine.server.DisplayServer", FakeServer)
+
+        _client_mod._ensure_started(open_browser=False)
+
+        assert events == [
+            ("wait", None),
+            "fallback-created",
+            "fallback-started",
+        ]
+
 
 class TestClientMode:
     """Test that show/section push via HTTP when _remote_url is set.

@@ -267,6 +267,43 @@ class TestStartCommand:
         assert "token" not in payload
         assert "--no-open" in mock_popen.call_args.args[0]
 
+    def test_start_reaps_spawned_child_when_concurrent_daemon_wins(self):
+        events = []
+
+        class Process:
+            pid = 111
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                events.append("terminate")
+
+            def wait(self, timeout=None):
+                events.append(("wait", timeout))
+                return 0
+
+            def kill(self):
+                events.append("kill")
+
+        call_count = 0
+
+        def mock_server_status():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return None
+            return {**_running_info(), "pid": 222}
+
+        with (
+            patch("vitrine.server_status", side_effect=mock_server_status),
+            patch("subprocess.Popen", return_value=Process()),
+        ):
+            result = runner.invoke(app, ["start", "--no-open", "--json"])
+
+        assert result.exit_code == 0
+        assert events == ["terminate", ("wait", 3.0)]
+
     def test_start_background_timeout(self):
         """Server doesn't come up within deadline — exit code 1."""
 
@@ -288,8 +325,46 @@ class TestStartCommand:
         assert result.exit_code == 1
         assert "didn't become healthy" in result.output.lower()
 
+    def test_start_timeout_terminates_and_reaps_exact_spawned_child(self):
+        events = []
+
+        class Process:
+            pid = 43210
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                events.append("terminate")
+
+            def wait(self, timeout=None):
+                events.append(("wait", timeout))
+                return 0
+
+            def kill(self):
+                events.append("kill")
+
+        clock = iter([0.0, 6.0])
+        with (
+            patch("vitrine.server_status", return_value=None),
+            patch("subprocess.Popen", return_value=Process()),
+            patch("vitrine.cli.time.monotonic", side_effect=lambda: next(clock)),
+        ):
+            result = runner.invoke(app, ["start", "--no-open", "--json"])
+
+        assert result.exit_code == 1
+        assert events == ["terminate", ("wait", 3.0)]
+
     def test_start_json_reports_early_process_exit(self):
-        process = type("Process", (), {"poll": lambda self: 7})()
+        events = []
+        process = type(
+            "Process",
+            (),
+            {
+                "poll": lambda self: 7,
+                "wait": lambda self: events.append("wait") or 7,
+            },
+        )()
         with (
             patch("vitrine.server_status", return_value=None),
             patch("subprocess.Popen", return_value=process),
@@ -300,6 +375,7 @@ class TestStartCommand:
         payload = _parse_single_json_line(result.output)
         assert payload["status"] == "failed"
         assert "exit code 7" in payload["error"]
+        assert events == ["wait"]
 
     def test_start_json_reports_spawn_failure(self):
         with (
