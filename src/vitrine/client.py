@@ -107,11 +107,21 @@ def _is_process_alive(pid: int) -> bool:
     return is_pid_alive(pid)
 
 
-def _health_check(url: str, expected_session_id: str) -> bool:
-    """GET /api/health and validate session_id matches."""
+def _health_check(
+    url: str,
+    expected_session_id: str,
+    expected_version: str | None = None,
+    expected_data_dir: str | None = None,
+) -> bool:
+    """GET /api/health and validate the daemon identity."""
     from vitrine._utils import health_check
 
-    return health_check(url, session_id=expected_session_id)
+    return health_check(
+        url,
+        session_id=expected_session_id,
+        version=expected_version,
+        data_dir=expected_data_dir,
+    )
 
 
 def _discard_stale_pid_file(pid_path: Path, reason: str) -> None:
@@ -131,62 +141,38 @@ def _discard_stale_pid_file(pid_path: Path, reason: str) -> None:
 def _discover_server() -> dict[str, Any] | None:
     """Read PID file, validate process and health, return server info or None.
 
-    Cleans up stale PID files automatically.
+    Cleans up metadata only after it has been validated and proven stale.
+    Invalid or legacy metadata fails closed before any PID probe or request.
     """
+    from vitrine._utils import ServerMetadataError, load_server_metadata
+
     pid_path = _pid_file_path()
     if not pid_path.exists():
         return None
 
-    try:
-        info = json.loads(pid_path.read_text())
-    except json.JSONDecodeError:
-        _discard_stale_pid_file(pid_path, "Invalid PID file JSON")
-        return None
-    except OSError:
-        return None
-
-    if not isinstance(info, dict):
-        _discard_stale_pid_file(pid_path, "Invalid PID file payload")
-        return None
-
-    pid = info.get("pid")
-    session_id = info.get("session_id")
-    url = info.get("url")
-    host = info.get("host", "127.0.0.1")
-    port = info.get("port")
-
-    valid = (
-        type(pid) is int
-        and pid > 0
-        and type(port) is int
-        and 1 <= port <= 65535
-        and isinstance(session_id, str)
-        and bool(session_id)
-        and isinstance(url, str)
-        and bool(url)
-        and isinstance(host, str)
-        and bool(host)
-    )
-    if not valid:
-        _discard_stale_pid_file(pid_path, "Invalid PID file fields")
-        return None
+    info = load_server_metadata(pid_path)
+    pid = info["pid"]
+    session_id = info["session_id"]
+    api_url = info["api_url"]
 
     # Check if process is alive
     if not _is_process_alive(pid):
         _discard_stale_pid_file(pid_path, f"Stale PID file (pid={pid} not alive)")
         return None
 
-    # Build an API-safe URL from host:port.  The "url" field uses
-    # vitrine.localhost which Python's urllib can't always resolve,
-    # so all programmatic access must go through 127.0.0.1.
-    api_url = f"http://{host}:{port}" if port else url
-    if not _health_check(api_url, session_id):
-        _discard_stale_pid_file(
-            pid_path, f"Health check failed for {api_url}; stale PID file"
+    if not _health_check(
+        api_url,
+        session_id,
+        info["version"],
+        info["data_dir"],
+    ):
+        raise ServerMetadataError(
+            "Server metadata is valid and its PID is alive, but the daemon "
+            f"at {api_url} is unreachable or has a different identity "
+            f"(pid={pid}, metadata={pid_path}). Refusing to discard metadata "
+            "or start a second daemon; stop the existing process and retry."
         )
-        return None
 
-    info["api_url"] = api_url
     return info
 
 
@@ -385,7 +371,7 @@ def _ensure_started(
         # Fast path: already connected to remote
         if _st._remote_url is not None:
             info = _discover_server()
-            if info and info.get("url") == _st._remote_url:
+            if info and info["api_url"] == _st._remote_url:
                 return
             # Stale remote, clear it
             _st._remote_url = None
@@ -574,9 +560,19 @@ def stop_server() -> bool:
                 break
             time.sleep(0.1)
         if not stopped:
-            stopped = not _health_check(url, session_id)
+            stopped = not _health_check(
+                url,
+                session_id,
+                info["version"],
+                info["data_dir"],
+            )
     else:
-        stopped = not _health_check(url, session_id)
+        stopped = not _health_check(
+            url,
+            session_id,
+            info["version"],
+            info["data_dir"],
+        )
 
     # If still alive, keep PID metadata so status/stop can retry later.
     if not stopped:

@@ -46,6 +46,11 @@ from starlette.websockets import WebSocket
 
 from vitrine import routes_agent, routes_card, routes_study, ws_handlers
 from vitrine._types import CardDescriptor
+from vitrine._utils import (
+    SERVER_BIND_HOST,
+    SUPPORTED_DISPLAY_HOSTS,
+    package_version,
+)
 from vitrine.artifacts import ArtifactStore, _serialize_card
 from vitrine.dispatch import (
     DispatchInfo,
@@ -68,18 +73,35 @@ def _get_display_host() -> str:
     """Return the host name used in browser-facing URLs."""
     override = os.getenv("VITRINE_DISPLAY_HOST")
     if override:
-        return override
+        display_host = override.lower()
+        if display_host not in SUPPORTED_DISPLAY_HOSTS:
+            supported = ", ".join(sorted(SUPPORTED_DISPLAY_HOSTS))
+            raise ValueError(
+                f"VITRINE_DISPLAY_HOST must be a supported loopback host: {supported}"
+            )
+        return display_host
     # Windows does not consistently resolve localhost subdomains for browsers.
     if sys.platform == "win32":
         return "127.0.0.1"
     return _DISPLAY_HOST
 
 
-def _check_health(url: str, session_id: str | None = None) -> bool:
-    """GET /api/health and optionally validate session_id matches."""
+def _check_health(
+    url: str,
+    session_id: str | None = None,
+    *,
+    version: str | None = None,
+    data_dir: str | None = None,
+) -> bool:
+    """GET /api/health and optionally validate daemon identity."""
     from vitrine._utils import health_check
 
-    return health_check(url, session_id=session_id)
+    return health_check(
+        url,
+        session_id=session_id,
+        version=version,
+        data_dir=data_dir,
+    )
 
 
 def _get_vitrine_dir() -> Path:
@@ -106,7 +128,7 @@ class DisplayServer:
         self,
         store: ArtifactStore | None = None,
         port: int = _DEFAULT_PORT,
-        host: str = "127.0.0.1",
+        host: str = SERVER_BIND_HOST,
         token: str | None = None,
         session_id: str | None = None,
         study_manager: StudyManager | None = None,
@@ -118,6 +140,12 @@ class DisplayServer:
         self.port = port
         self.token = token
         self.session_id = session_id or (store.session_id if store else "display")
+        self.version = package_version()
+        self.data_dir = (
+            study_manager.display_dir.resolve()
+            if study_manager is not None
+            else _get_vitrine_dir().resolve()
+        )
         self._pid_path: Path | None = None
         self._connections: list[WebSocket] = []
         self._lock = threading.Lock()
@@ -543,13 +571,17 @@ class DisplayServer:
         """Write the PID file with server metadata."""
         self._pid_path = pid_path
         pid_path.parent.mkdir(parents=True, exist_ok=True)
+        self.data_dir = pid_path.parent.resolve()
         info = {
             "pid": os.getpid(),
             "port": self.port,
             "host": self.host,
             "url": self.url,
+            "api_url": f"http://{SERVER_BIND_HOST}:{self.port}",
             "session_id": self.session_id,
             "token": self.token,
+            "data_dir": str(self.data_dir),
+            "version": self.version,
             "started_at": datetime.now(timezone.utc).isoformat(),
         }
         temp_path = pid_path.with_name(f".{pid_path.name}.{uuid.uuid4().hex}.tmp")
@@ -574,7 +606,9 @@ class DisplayServer:
             self._pid_path = None
             return
         try:
-            info = json.loads(self._pid_path.read_text())
+            from vitrine._utils import load_server_metadata
+
+            info = load_server_metadata(self._pid_path)
             if info.get("pid") != os.getpid():
                 logger.debug(
                     "PID file belongs to pid=%s, not us (%s); leaving it",
@@ -585,8 +619,8 @@ class DisplayServer:
                 return
             self._pid_path.unlink()
             logger.debug(f"PID file removed: {self._pid_path}")
-        except (json.JSONDecodeError, OSError):
-            pass
+        except (OSError, RuntimeError) as exc:
+            logger.debug("Could not safely remove PID file: %s", exc)
         self._pid_path = None
 
     @property
@@ -655,7 +689,7 @@ def _run_standalone(port: int = _DEFAULT_PORT, no_open: bool = False) -> None:
     import atexit
     import sys
 
-    from vitrine._utils import lock_file, unlock_file
+    from vitrine._utils import load_server_metadata, lock_file, unlock_file
 
     display_dir = _get_vitrine_dir()
     display_dir.mkdir(parents=True, exist_ok=True)
@@ -676,23 +710,23 @@ def _run_standalone(port: int = _DEFAULT_PORT, no_open: bool = False) -> None:
     try:
         # Check PID file for an existing healthy server
         if pid_path.exists():
-            try:
-                info = json.loads(pid_path.read_text())
-                pid = info.get("pid")
-                host = info.get("host", "127.0.0.1")
-                port_num = info.get("port")
-                sid = info.get("session_id")
-                api_url = f"http://{host}:{port_num}" if port_num else info.get("url")
-                if (
-                    pid
-                    and api_url
-                    and _is_pid_alive(pid)
-                    and _check_health(api_url, sid)
-                ):
-                    logger.debug(f"Healthy server already running (pid={pid}), exiting")
-                    sys.exit(0)
-            except (json.JSONDecodeError, OSError):
-                pass
+            info = load_server_metadata(pid_path)
+            pid = info["pid"]
+            if not _is_pid_alive(pid):
+                pid_path.unlink()
+            elif _check_health(
+                info["api_url"],
+                info["session_id"],
+                version=info["version"],
+                data_dir=info["data_dir"],
+            ):
+                logger.debug(f"Healthy server already running (pid={pid}), exiting")
+                sys.exit(0)
+            else:
+                raise RuntimeError(
+                    "Server PID is alive but its health identity does not match; "
+                    "refusing to start a duplicate daemon"
+                )
 
         # No server found for this project — start one while holding the lock
         session_id = uuid.uuid4().hex[:12]
@@ -702,7 +736,7 @@ def _run_standalone(port: int = _DEFAULT_PORT, no_open: bool = False) -> None:
         server = DisplayServer(
             study_manager=study_manager,
             port=port,
-            host="127.0.0.1",
+            host=SERVER_BIND_HOST,
             token=token,
             session_id=session_id,
         )

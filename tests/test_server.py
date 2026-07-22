@@ -94,6 +94,13 @@ class TestServerCreation:
         monkeypatch.setenv("VITRINE_DISPLAY_HOST", "localhost")
         assert server.url == "http://localhost:7799"
 
+    def test_display_host_env_override_rejects_non_loopback(
+        self, server, monkeypatch
+    ):
+        monkeypatch.setenv("VITRINE_DISPLAY_HOST", "example.com")
+        with pytest.raises(ValueError, match="supported loopback host"):
+            _ = server.url
+
 
 class TestPortDiscovery:
     def test_find_port_returns_available(self, store):
@@ -345,7 +352,7 @@ class TestHealthEndpoint:
     def app(self, server):
         return server._app
 
-    def test_health_returns_ok(self, app):
+    def test_health_returns_ok(self, app, server):
         from starlette.testclient import TestClient
 
         client = TestClient(app)
@@ -354,6 +361,8 @@ class TestHealthEndpoint:
         data = resp.json()
         assert data["status"] == "ok"
         assert data["session_id"] == "server-test"
+        assert data["version"] == server_mod.package_version()
+        assert data["data_dir"] == str(server.data_dir)
 
 
 class TestCommandEndpoint:
@@ -465,6 +474,9 @@ class TestPidFile:
         assert data["port"] == 7799
         assert data["session_id"] == "sess-1"
         assert data["token"] == "tok"
+        assert data["api_url"] == "http://127.0.0.1:7799"
+        assert data["data_dir"] == str(tmp_path.resolve())
+        assert data["version"] == server_mod.package_version()
         assert "pid" in data
         assert list(tmp_path.glob(".*.tmp")) == []
 

@@ -12,7 +12,6 @@ Usage:
 
 from __future__ import annotations
 
-import importlib.metadata
 import json
 import sys
 import time
@@ -51,10 +50,9 @@ def _error(msg: str) -> None:
 
 def _package_version() -> str:
     """Return the installed Vitrine package version."""
-    try:
-        return importlib.metadata.version("vitrine")
-    except importlib.metadata.PackageNotFoundError:
-        return "unknown"
+    from vitrine._utils import package_version
+
+    return package_version()
 
 
 def _lifecycle_payload(
@@ -62,6 +60,7 @@ def _lifecycle_payload(
     info: dict[str, Any] | None = None,
     *,
     error: str | None = None,
+    version: str | None = None,
 ) -> dict[str, Any]:
     """Build the stable machine-readable lifecycle response."""
     from vitrine._utils import get_vitrine_dir
@@ -79,8 +78,8 @@ def _lifecycle_payload(
         "pid": info.get("pid"),
         "port": port,
         "session_id": info.get("session_id"),
-        "data_dir": str(get_vitrine_dir().resolve()),
-        "version": _package_version(),
+        "data_dir": info.get("data_dir", str(get_vitrine_dir().resolve())),
+        "version": version or info.get("version") or _package_version(),
         "error": error,
     }
 
@@ -88,6 +87,37 @@ def _lifecycle_payload(
 def _emit_json(payload: dict[str, Any]) -> None:
     """Write one compact JSON object to stdout."""
     typer.echo(json.dumps(payload, separators=(",", ":")))
+
+
+def _fail_metadata(exc: RuntimeError, json_output: bool) -> None:
+    """Report untrusted server metadata without accepting daemon identity."""
+    if json_output:
+        _emit_json(_lifecycle_payload("failed", error=str(exc), version="unknown"))
+    else:
+        _error(str(exc))
+    raise typer.Exit(EXIT_FAILURE) from exc
+
+
+def _server_status(json_output: bool) -> dict[str, Any] | None:
+    """Read status and turn metadata failures into stable CLI failures."""
+    from vitrine import server_status
+    from vitrine._utils import ServerMetadataError
+
+    try:
+        return server_status()
+    except ServerMetadataError as exc:
+        _fail_metadata(exc, json_output)
+
+
+def _stop_server(json_output: bool) -> bool:
+    """Stop a daemon and turn metadata failures into stable CLI failures."""
+    from vitrine import stop_server
+    from vitrine._utils import ServerMetadataError
+
+    try:
+        return stop_server()
+    except ServerMetadataError as exc:
+        _fail_metadata(exc, json_output)
 
 
 @app.command()
@@ -99,16 +129,14 @@ def restart(
     ),
 ) -> None:
     """Stop the running vitrine server and start a fresh one."""
-    from vitrine import server_status, stop_server
-
-    info = server_status()
+    info = _server_status(json_output)
     if info:
         if not json_output:
             _info(
                 f"Stopping server (pid={info.get('pid')}, "
                 f"port={info.get('port')})..."
             )
-        if stop_server():
+        if _stop_server(json_output):
             if not json_output:
                 _success("Server stopped.")
         else:
@@ -146,9 +174,7 @@ def start(
     ),
 ) -> None:
     """Start the vitrine server."""
-    from vitrine import server_status
-
-    info = server_status()
+    info = _server_status(json_output)
     if info:
         if json_output:
             _emit_json(_lifecycle_payload("running", info))
@@ -188,11 +214,9 @@ def stop(
     ),
 ) -> None:
     """Stop the running vitrine server."""
-    from vitrine import server_status, stop_server
-
     if json_output:
-        info = server_status()
-        if stop_server():
+        info = _server_status(json_output)
+        if _stop_server(json_output):
             _emit_json(_lifecycle_payload("stopped"))
             return
         if info:
@@ -202,7 +226,7 @@ def stop(
         _emit_json(_lifecycle_payload("stopped"))
         return
 
-    if stop_server():
+    if _stop_server(json_output):
         _success("Server stopped.")
     else:
         _info("No running server found.")
@@ -215,9 +239,7 @@ def status(
     ),
 ) -> None:
     """Show status of the vitrine server."""
-    from vitrine import server_status
-
-    info = server_status()
+    info = _server_status(json_output)
     if info:
         if json_output:
             _emit_json(_lifecycle_payload("running", info))

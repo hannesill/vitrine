@@ -10,20 +10,13 @@ from urllib.parse import urlsplit
 
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from vitrine._utils import SUPPORTED_DISPLAY_HOSTS
 from vitrine.artifacts import _serialize_card
 
 if TYPE_CHECKING:
     from vitrine.server import DisplayServer
 
 logger = logging.getLogger(__name__)
-
-_ALLOWED_ORIGIN_HOSTS = frozenset(
-    {
-        "127.0.0.1",
-        "localhost",
-        "vitrine.localhost",
-    }
-)
 
 
 def _is_allowed_ws_origin(origin: str | None, port: int) -> bool:
@@ -41,7 +34,7 @@ def _is_allowed_ws_origin(origin: str | None, port: int) -> bool:
         return False
     return (
         parsed.scheme == "http"
-        and parsed.hostname in _ALLOWED_ORIGIN_HOSTS
+        and parsed.hostname in SUPPORTED_DISPLAY_HOSTS
         and origin_port == port
         and parsed.username is None
         and parsed.password is None

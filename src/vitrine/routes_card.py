@@ -291,7 +291,8 @@ async def api_health(server: DisplayServer, request: Request) -> JSONResponse:
             "status": "ok",
             "session_id": server.session_id,
             "uptime": round(uptime_seconds, 1),
-            "version": "1.0",
+            "version": server.version,
+            "data_dir": str(server.data_dir),
             "study_count": study_count,
         }
     )

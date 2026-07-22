@@ -31,6 +31,7 @@ def _running_info() -> dict:
         "session_id": "sess-123",
         "started_at": "2024-01-01T00:00:00",
         "token": "must-not-leak",
+        "version": "9.8.7",
     }
 
 
@@ -87,10 +88,23 @@ class TestStatusCommand:
             "port": 7741,
             "session_id": "sess-123",
             "data_dir": str(data_dir.resolve()),
-            "version": "0.1.0",
+            "version": "9.8.7",
             "error": None,
         }
         assert "token" not in payload
+
+    def test_status_json_uses_daemon_version_without_reading_cli_version(self):
+        with (
+            patch("vitrine.server_status", return_value=_running_info()),
+            patch(
+                "vitrine.cli._package_version",
+                side_effect=AssertionError("must not read invoking CLI version"),
+            ),
+        ):
+            result = runner.invoke(app, ["status", "--json"])
+
+        assert result.exit_code == 0
+        assert _parse_single_json_line(result.output)["version"] == "9.8.7"
 
     def test_status_json_not_running_uses_exit_three(self, monkeypatch, tmp_path):
         data_dir = tmp_path / ".vitrine"
@@ -122,6 +136,21 @@ class TestStatusCommand:
             str((tmp_path / "a" / ".vitrine").resolve()),
             str((tmp_path / "b" / ".vitrine").resolve()),
         ]
+
+    def test_status_json_rejects_legacy_metadata_with_unknown_version(self):
+        from vitrine._utils import ServerRestartRequired
+
+        with patch(
+            "vitrine.server_status",
+            side_effect=ServerRestartRequired("Server restart required"),
+        ):
+            result = runner.invoke(app, ["status", "--json"])
+
+        assert result.exit_code == 1
+        payload = _parse_single_json_line(result.output)
+        assert payload["status"] == "failed"
+        assert payload["version"] == "unknown"
+        assert payload["error"] == "Server restart required"
 
 
 class TestStopCommand:
