@@ -14,6 +14,7 @@ Tests cover:
 import pandas as pd
 import pytest
 
+import vitrine.server as server_mod
 from vitrine.artifacts import ArtifactStore
 from vitrine.renderer import render
 from vitrine.server import DisplayServer
@@ -83,6 +84,14 @@ class TestServerCreation:
 
     def test_url_property(self, server):
         assert server.url == "http://vitrine.localhost:7799"
+
+    def test_url_property_uses_loopback_on_windows(self, server, monkeypatch):
+        monkeypatch.setattr(server_mod.sys, "platform", "win32")
+        assert server.url == "http://127.0.0.1:7799"
+
+    def test_display_host_env_override(self, server, monkeypatch):
+        monkeypatch.setenv("VITRINE_DISPLAY_HOST", "localhost")
+        assert server.url == "http://localhost:7799"
 
 
 class TestPortDiscovery:
