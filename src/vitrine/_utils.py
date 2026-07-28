@@ -24,6 +24,8 @@ SUPPORTED_DISPLAY_HOSTS: frozenset[str] = frozenset(
         "vitrine.localhost",
     }
 )
+HEALTH_CHECK_TIMEOUT_SECONDS = 2.0
+PROCESS_REAP_TIMEOUT_SECONDS = 3.0
 
 
 class ServerMetadataError(RuntimeError):
@@ -226,7 +228,9 @@ def detached_popen_kwargs() -> dict[str, Any]:
     return {"start_new_session": True}
 
 
-def terminate_spawned_process(process: Any, timeout: float = 3.0) -> None:
+def terminate_spawned_process(
+    process: Any, timeout: float = PROCESS_REAP_TIMEOUT_SECONDS
+) -> None:
     """Terminate and reap exactly the child represented by ``process``.
 
     The retained ``Popen`` handle is the authority. No PID-file process is
@@ -313,7 +317,7 @@ def health_check(
         import urllib.request
 
         req = urllib.request.Request(f"{url}/api/health", method="GET")
-        with urllib.request.urlopen(req, timeout=2) as resp:
+        with urllib.request.urlopen(req, timeout=HEALTH_CHECK_TIMEOUT_SECONDS) as resp:
             data = json.loads(resp.read())
             if data.get("status") != "ok":
                 return False

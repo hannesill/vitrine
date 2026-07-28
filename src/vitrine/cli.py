@@ -1,6 +1,7 @@
 """Standalone vitrine CLI.
 
 Usage:
+    vitrine doctor  [--json]
     vitrine restart [--port PORT] [--no-open]
     vitrine start   [--port PORT] [--no-open]
     vitrine stop
@@ -20,6 +21,11 @@ from typing import Any
 import typer
 from rich.console import Console
 
+from vitrine._utils import (
+    HEALTH_CHECK_TIMEOUT_SECONDS,
+    PROCESS_REAP_TIMEOUT_SECONDS,
+)
+
 app = typer.Typer(
     name="vitrine",
     help="Manage the vitrine display server and studies.",
@@ -30,6 +36,19 @@ console = Console()
 EXIT_SUCCESS = 0
 EXIT_FAILURE = 1
 EXIT_NOT_RUNNING = 3
+LIFECYCLE_CONTRACT_VERSION = 1
+STARTUP_READY_TIMEOUT_SECONDS = 20.0
+STARTUP_POLL_INTERVAL_SECONDS = 0.2
+STARTUP_STATUS_CHECK_TIMEOUT_SECONDS = HEALTH_CHECK_TIMEOUT_SECONDS
+STARTUP_REAP_TIMEOUT_SECONDS = PROCESS_REAP_TIMEOUT_SECONDS
+# terminate_spawned_process may wait once after terminate and once after kill.
+STARTUP_CLEANUP_BUDGET_SECONDS = 2 * STARTUP_REAP_TIMEOUT_SECONDS
+STARTUP_COMMAND_BUDGET_SECONDS = (
+    STARTUP_READY_TIMEOUT_SECONDS
+    + STARTUP_STATUS_CHECK_TIMEOUT_SECONDS
+    + STARTUP_POLL_INTERVAL_SECONDS
+    + STARTUP_CLEANUP_BUDGET_SECONDS
+)
 
 
 class _StartFailure(RuntimeError):
@@ -73,6 +92,7 @@ def _lifecycle_payload(
 
     return {
         "status": status,
+        "lifecycle_contract_version": LIFECYCLE_CONTRACT_VERSION,
         "url": info.get("url"),
         "api_url": api_url,
         "pid": info.get("pid"),
@@ -118,6 +138,32 @@ def _stop_server(json_output: bool) -> bool:
         return stop_server()
     except ServerMetadataError as exc:
         _fail_metadata(exc, json_output)
+
+
+@app.command()
+def doctor(
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit machine-readable installation diagnostics."
+    ),
+) -> None:
+    """Report the installed Vitrine runtime and lifecycle contract."""
+    version = _package_version()
+    if json_output:
+        _emit_json(
+            {
+                "status": "ok",
+                "version": version,
+                "lifecycle_contract_version": LIFECYCLE_CONTRACT_VERSION,
+                "python_executable": sys.executable,
+            }
+        )
+        return
+
+    _success("Vitrine installation is healthy")
+    console.print(f"  [bold]Version:[/bold] {version}")
+    console.print(f"  [bold]Lifecycle contract:[/bold] {LIFECYCLE_CONTRACT_VERSION}")
+    console.print("  [bold]Python executable:[/bold]")
+    console.print(f"    {sys.executable}")
 
 
 @app.command()
@@ -359,13 +405,13 @@ def _start_background(
     from vitrine import server_status
 
     process_reaped = False
-    deadline = time.monotonic() + 5.0
+    deadline = time.monotonic() + STARTUP_READY_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         try:
             info = server_status()
         except ServerMetadataError as exc:
             if not process_reaped:
-                terminate_spawned_process(process)
+                terminate_spawned_process(process, timeout=STARTUP_REAP_TIMEOUT_SECONDS)
             raise _StartFailure(str(exc)) from exc
         if info:
             spawned_pid = getattr(process, "pid", None)
@@ -376,7 +422,7 @@ def _start_background(
                 and spawned_pid != running_pid
                 and not process_reaped
             ):
-                terminate_spawned_process(process)
+                terminate_spawned_process(process, timeout=STARTUP_REAP_TIMEOUT_SECONDS)
             if not json_output:
                 _success(
                     f"Server started (pid={info.get('pid')}, url={info.get('url')})"
@@ -385,7 +431,7 @@ def _start_background(
         returncode = process.poll()
         if isinstance(returncode, int):
             if not process_reaped:
-                terminate_spawned_process(process)
+                terminate_spawned_process(process, timeout=STARTUP_REAP_TIMEOUT_SECONDS)
                 process_reaped = True
             if returncode != 0:
                 message = (
@@ -395,11 +441,12 @@ def _start_background(
                 if not json_output:
                     _error(message)
                 raise _StartFailure(message)
-        time.sleep(0.2)
+        time.sleep(STARTUP_POLL_INTERVAL_SECONDS)
 
     if not process_reaped:
-        terminate_spawned_process(process)
-    message = "Server process started but didn't become healthy within 5s."
+        terminate_spawned_process(process, timeout=STARTUP_REAP_TIMEOUT_SECONDS)
+    timeout = f"{STARTUP_READY_TIMEOUT_SECONDS:g}"
+    message = f"Server process started but didn't become healthy within {timeout}s."
     if not json_output:
         _error(message)
     raise _StartFailure(message)
