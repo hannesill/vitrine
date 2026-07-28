@@ -67,6 +67,7 @@ _STATIC_DIR = Path(__file__).parent / "static"
 _DEFAULT_PORT = 7741
 _MAX_PORT = 7750
 _DISPLAY_HOST = "vitrine.localhost"
+_SERVER_THREAD_JOIN_TIMEOUT_SECONDS = 3.0
 
 
 def _get_display_host() -> str:
@@ -149,6 +150,7 @@ class DisplayServer:
         self._pid_path: Path | None = None
         self._connections: list[WebSocket] = []
         self._lock = threading.Lock()
+        self._lifecycle_lock = threading.RLock()
         self._server: uvicorn.Server | None = None
         self._thread: threading.Thread | None = None
         self._started = threading.Event()
@@ -526,65 +528,93 @@ class DisplayServer:
             open_browser: Open a browser tab to the display.
             pid_path: If set, write a PID file after the server binds.
         """
-        if self._thread and self._thread.is_alive():
-            return
+        with self._lifecycle_lock:
+            if self._thread and self._thread.is_alive():
+                if self._server is not None and self._server.should_exit:
+                    raise RuntimeError(
+                        "The previous Vitrine server is still stopping; "
+                        "wait for shutdown to complete before restarting."
+                    )
+                return
+            if self._thread is not None:
+                # A previous stop may have timed out before its thread exited.
+                # Its thread finalizer has now drained the watchdog, so finish
+                # that generation's cleanup before installing new state.
+                self.stop()
 
-        self.port = self._find_port()
+            self.port = self._find_port()
+            self._started.clear()
+            self._watchdog_task = None
 
-        config = uvicorn.Config(
-            app=self._app,
-            host=self.host,
-            port=self.port,
-            log_level="warning",
-            access_log=False,
-        )
-        self._server = uvicorn.Server(config)
-
-        def _run() -> None:
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
-            self._started.set()
-            self._loop.run_until_complete(self._server.serve())
-
-        self._thread = threading.Thread(target=_run, daemon=True)
-        self._thread.start()
-        self._started.wait(timeout=5)
-
-        # Wait for the server to fully bind before publishing PID metadata.
-        if not self._wait_for_server():
-            self.stop()
-            raise RuntimeError(
-                f"Vitrine server did not bind to {self.host}:{self.port}"
+            config = uvicorn.Config(
+                app=self._app,
+                host=self.host,
+                port=self.port,
+                log_level="warning",
+                access_log=False,
             )
+            server = uvicorn.Server(config)
+            self._server = server
 
-        # Start dispatch watchdog
-        if self._loop:
-            self._loop.call_soon_threadsafe(
-                lambda: setattr(
-                    self,
-                    "_watchdog_task",
-                    self._loop.create_task(_dispatch_watchdog(self)),
+            def _run() -> None:
+                loop = asyncio.new_event_loop()
+                self._loop = loop
+                asyncio.set_event_loop(loop)
+                self._started.set()
+
+                async def _serve() -> None:
+                    watchdog = asyncio.create_task(_dispatch_watchdog(self))
+                    if self._loop is loop and self._server is server:
+                        self._watchdog_task = watchdog
+                    try:
+                        await server.serve()
+                    finally:
+                        if not watchdog.done():
+                            watchdog.cancel()
+                        await asyncio.gather(
+                            watchdog,
+                            return_exceptions=True,
+                        )
+                        if self._watchdog_task is watchdog:
+                            self._watchdog_task = None
+
+                try:
+                    loop.run_until_complete(_serve())
+                finally:
+                    loop.close()
+                    if self._loop is loop:
+                        self._loop = None
+
+            thread = threading.Thread(target=_run, daemon=True)
+            self._thread = thread
+            thread.start()
+            self._started.wait(timeout=5)
+
+            # Wait for the server to fully bind before publishing PID metadata.
+            if not self._wait_for_server():
+                self.stop()
+                raise RuntimeError(
+                    f"Vitrine server did not bind to {self.host}:{self.port}"
                 )
+
+            # Write PID file if requested
+            if pid_path is not None:
+                self._write_pid_file(pid_path)
+
+            import sys
+
+            print(
+                f"vitrine: {self.url}",
+                file=sys.stderr,
             )
 
-        # Write PID file if requested
-        if pid_path is not None:
-            self._write_pid_file(pid_path)
+            if open_browser:
+                try:
+                    import webbrowser
 
-        import sys
-
-        print(
-            f"vitrine: {self.url}",
-            file=sys.stderr,
-        )
-
-        if open_browser:
-            try:
-                import webbrowser
-
-                webbrowser.open(self.url)
-            except Exception:
-                pass
+                    webbrowser.open(self.url)
+                except Exception:
+                    pass
 
     def _wait_for_server(self, timeout: float = 3.0) -> bool:
         """Wait for the server to accept connections."""
@@ -601,23 +631,38 @@ class DisplayServer:
 
     def stop(self) -> None:
         """Stop the server and remove PID file if set."""
-        if self._watchdog_task:
-            self._watchdog_task.cancel()
-            self._watchdog_task = None
-        cleanup_dispatches(self)
-        self._remove_pid_file()
-        # Flush pending selection save
-        if self._selection_save_timer is not None:
-            self._selection_save_timer.cancel()
-            self._selection_save_timer = None
-        self._save_selections()
-        if self._server:
-            self._server.should_exit = True
-        if self._thread:
-            self._thread.join(timeout=3)
-            self._thread = None
-        self._server = None
-        logger.debug("Display server stopped")
+        with self._lifecycle_lock:
+            server = self._server
+            thread = self._thread
+            if server is not None:
+                server.should_exit = True
+            if thread is not None:
+                if thread is threading.current_thread():
+                    raise RuntimeError(
+                        "DisplayServer.stop() cannot wait for its own server thread."
+                    )
+                thread.join(timeout=_SERVER_THREAD_JOIN_TIMEOUT_SECONDS)
+                if thread.is_alive():
+                    raise RuntimeError(
+                        "Vitrine server did not stop within "
+                        f"{_SERVER_THREAD_JOIN_TIMEOUT_SECONDS:g}s; "
+                        "restart is blocked until that thread exits."
+                    )
+
+            # The server-thread finalizer cancels and awaits the watchdog.
+            # Cleanup must happen only after join confirms that finalizer ran.
+            cleanup_dispatches(self)
+            self._remove_pid_file()
+            # Flush pending selection save
+            if self._selection_save_timer is not None:
+                self._selection_save_timer.cancel()
+                self._selection_save_timer = None
+            self._save_selections()
+            if self._thread is thread:
+                self._thread = None
+            if self._server is server:
+                self._server = None
+            logger.debug("Display server stopped")
 
     def _write_pid_file(self, pid_path: Path) -> None:
         """Write the PID file with server metadata."""

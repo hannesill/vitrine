@@ -1093,6 +1093,101 @@ class TestSingletonGuard:
         finally:
             srv.stop()
 
+    def test_stop_drains_dispatch_watchdog_before_cleanup(self, store, monkeypatch):
+        import time
+
+        srv = DisplayServer(
+            store=store,
+            port=7748,
+            host="127.0.0.1",
+            session_id="watchdog-stop-test",
+        )
+        watchdog = None
+        try:
+            srv.start(open_browser=False)
+            deadline = time.monotonic() + 1.0
+            while srv._watchdog_task is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            watchdog = srv._watchdog_task
+            assert watchdog is not None
+
+            cleanup_called = False
+
+            def assert_watchdog_drained(_server):
+                nonlocal cleanup_called
+                assert watchdog.done()
+                cleanup_called = True
+
+            monkeypatch.setattr(
+                server_mod, "cleanup_dispatches", assert_watchdog_drained
+            )
+        finally:
+            srv.stop()
+
+        assert cleanup_called
+        assert watchdog.done()
+        assert srv._watchdog_task is None
+        assert srv._loop is None
+
+    def test_stop_timeout_keeps_generation_and_blocks_restart(self, store, monkeypatch):
+        srv = DisplayServer(
+            store=store,
+            port=7748,
+            host="127.0.0.1",
+            session_id="stuck-stop-test",
+        )
+
+        class StuckThread:
+            def __init__(self):
+                self.alive = True
+                self.join_timeout = None
+
+            def is_alive(self):
+                return self.alive
+
+            def join(self, timeout=None):
+                self.join_timeout = timeout
+
+        class StuckServer:
+            should_exit = False
+
+        thread = StuckThread()
+        uvicorn_server = StuckServer()
+        cleanup_called = False
+
+        def record_cleanup(_server):
+            nonlocal cleanup_called
+            cleanup_called = True
+
+        monkeypatch.setattr(server_mod, "cleanup_dispatches", record_cleanup)
+        monkeypatch.setattr(server_mod, "_SERVER_THREAD_JOIN_TIMEOUT_SECONDS", 0.01)
+        srv._thread = thread
+        srv._server = uvicorn_server
+
+        with pytest.raises(RuntimeError, match="did not stop within"):
+            srv.stop()
+
+        assert uvicorn_server.should_exit is True
+        assert thread.join_timeout == 0.01
+        assert srv._thread is thread
+        assert srv._server is uvicorn_server
+        assert cleanup_called is False
+
+        with pytest.raises(RuntimeError, match="still stopping"):
+            srv.start(open_browser=False)
+
+        def stop_after_cleanup():
+            raise RuntimeError("next generation construction reached")
+
+        thread.alive = False
+        monkeypatch.setattr(srv, "_find_port", stop_after_cleanup)
+        with pytest.raises(RuntimeError, match="next generation construction reached"):
+            srv.start(open_browser=False)
+
+        assert cleanup_called is True
+        assert srv._thread is None
+        assert srv._server is None
+
     def test_check_health_on_dead_port(self):
         """_check_health returns False for a port with no server."""
         from vitrine.server import _check_health

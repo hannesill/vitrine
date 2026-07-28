@@ -1,6 +1,7 @@
 """Tests for vitrine.cli — standalone vitrine CLI commands.
 
 Tests cover:
+- doctor command: project-independent runtime diagnostics
 - status command: running and no-server states
 - stop command: successful stop and no-server-found
 - start command: already running, background start
@@ -12,7 +13,15 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-from vitrine.cli import app
+from vitrine.cli import (
+    STARTUP_CLEANUP_BUDGET_SECONDS,
+    STARTUP_COMMAND_BUDGET_SECONDS,
+    STARTUP_POLL_INTERVAL_SECONDS,
+    STARTUP_READY_TIMEOUT_SECONDS,
+    STARTUP_REAP_TIMEOUT_SECONDS,
+    STARTUP_STATUS_CHECK_TIMEOUT_SECONDS,
+    app,
+)
 
 runner = CliRunner()
 
@@ -38,6 +47,43 @@ def _running_info() -> dict:
 def _parse_single_json_line(output: str) -> dict:
     assert len(output.splitlines()) == 1
     return json.loads(output)
+
+
+class TestDoctorCommand:
+    def test_doctor_json_is_project_independent(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("VITRINE_DATA_DIR", str(tmp_path / "ignored"))
+
+        with (
+            patch("vitrine.cli._package_version", return_value="0.1.1"),
+            patch("vitrine.cli.sys.executable", "/opt/vitrine/bin/python"),
+            patch(
+                "vitrine.server_status",
+                side_effect=AssertionError("doctor must not inspect a project"),
+            ),
+        ):
+            result = runner.invoke(app, ["doctor", "--json"])
+
+        assert result.exit_code == 0
+        assert _parse_single_json_line(result.output) == {
+            "status": "ok",
+            "version": "0.1.1",
+            "lifecycle_contract_version": 1,
+            "python_executable": "/opt/vitrine/bin/python",
+        }
+
+    def test_doctor_human_output_is_useful(self):
+        with (
+            patch("vitrine.cli._package_version", return_value="0.1.1"),
+            patch("vitrine.cli.sys.executable", "/opt/vitrine/bin/python"),
+        ):
+            result = runner.invoke(app, ["doctor"])
+
+        assert result.exit_code == 0
+        assert "installation is healthy" in result.output.lower()
+        assert "0.1.1" in result.output
+        assert "Lifecycle contract" in result.output
+        assert "/opt/vitrine/bin/python" in result.output
 
 
 class TestStatusCommand:
@@ -80,6 +126,7 @@ class TestStatusCommand:
         payload = _parse_single_json_line(result.output)
         assert payload == {
             "status": "running",
+            "lifecycle_contract_version": 1,
             "url": "http://vitrine.localhost:7741",
             "api_url": "http://127.0.0.1:7741",
             "pid": 12345,
@@ -108,14 +155,18 @@ class TestStatusCommand:
         data_dir = tmp_path / ".vitrine"
         monkeypatch.setenv("VITRINE_DATA_DIR", str(data_dir))
 
-        with patch("vitrine.server_status", return_value=None):
+        with (
+            patch("vitrine.server_status", return_value=None),
+            patch("vitrine.cli._package_version", return_value="0.1.1"),
+        ):
             result = runner.invoke(app, ["status", "--json"])
 
         assert result.exit_code == 3
         payload = _parse_single_json_line(result.output)
         assert payload["status"] == "stopped"
         assert payload["data_dir"] == str(data_dir.resolve())
-        assert payload["version"] == "0.1.0"
+        assert payload["version"] == "0.1.1"
+        assert payload["lifecycle_contract_version"] == 1
         assert payload["pid"] is None
         assert payload["error"] is None
 
@@ -145,6 +196,7 @@ class TestStatusCommand:
         assert result.exit_code == 1
         payload = _parse_single_json_line(result.output)
         assert payload["status"] == "failed"
+        assert payload["lifecycle_contract_version"] == 1
         assert payload["version"] == "unknown"
         assert payload["error"] == "Server restart required"
 
@@ -181,6 +233,7 @@ class TestStopCommand:
         assert result.exit_code == 0
         payload = _parse_single_json_line(result.output)
         assert payload["status"] == "stopped"
+        assert payload["lifecycle_contract_version"] == 1
         assert payload["data_dir"] == str(data_dir.resolve())
         assert payload["pid"] is None
 
@@ -194,10 +247,19 @@ class TestStopCommand:
         assert result.exit_code == 1
         payload = _parse_single_json_line(result.output)
         assert payload["status"] == "failed"
+        assert payload["lifecycle_contract_version"] == 1
         assert payload["error"] == "Failed to stop the running server."
 
 
 class TestStartCommand:
+    def test_startup_timing_budget_includes_status_poll_and_cleanup(self):
+        assert STARTUP_READY_TIMEOUT_SECONDS == 20.0
+        assert STARTUP_POLL_INTERVAL_SECONDS == 0.2
+        assert STARTUP_STATUS_CHECK_TIMEOUT_SECONDS == 2.0
+        assert STARTUP_REAP_TIMEOUT_SECONDS == 3.0
+        assert STARTUP_CLEANUP_BUDGET_SECONDS == 6.0
+        assert STARTUP_COMMAND_BUDGET_SECONDS == 28.2
+
     def test_start_already_running(self):
         info = {"pid": 12345, "port": 7741, "url": "http://127.0.0.1:7741"}
         with patch("vitrine.server_status", return_value=info):
@@ -215,6 +277,7 @@ class TestStartCommand:
         assert result.exit_code == 0
         payload = _parse_single_json_line(result.output)
         assert payload["status"] == "running"
+        assert payload["lifecycle_contract_version"] == 1
         assert payload["session_id"] == "sess-123"
         start_background.assert_not_called()
 
@@ -258,6 +321,7 @@ class TestStartCommand:
         assert result.exit_code == 0
         payload = _parse_single_json_line(result.output)
         assert payload["status"] == "running"
+        assert payload["lifecycle_contract_version"] == 1
         assert payload["url"] == "http://vitrine.localhost:7741"
         assert payload["api_url"] == "http://127.0.0.1:7741"
         assert "token" not in payload
@@ -303,7 +367,7 @@ class TestStartCommand:
     def test_start_background_timeout(self):
         """Server doesn't come up within deadline — exit code 1."""
 
-        # Make time.monotonic advance past the 5s deadline
+        # Make time.monotonic advance past the readiness deadline.
         clock = [0.0]
 
         def mock_monotonic():
@@ -320,6 +384,7 @@ class TestStartCommand:
 
         assert result.exit_code == 1
         assert "didn't become healthy" in result.output.lower()
+        assert "within 20s" in result.output
 
     def test_start_timeout_terminates_and_reaps_exact_spawned_child(self):
         events = []
@@ -340,7 +405,7 @@ class TestStartCommand:
             def kill(self):
                 events.append("kill")
 
-        clock = iter([0.0, 6.0])
+        clock = iter([0.0, STARTUP_READY_TIMEOUT_SECONDS + 1.0])
         with (
             patch("vitrine.server_status", return_value=None),
             patch("subprocess.Popen", return_value=Process()),
@@ -349,7 +414,10 @@ class TestStartCommand:
             result = runner.invoke(app, ["start", "--no-open", "--json"])
 
         assert result.exit_code == 1
-        assert events == ["terminate", ("wait", 3.0)]
+        assert events == [
+            "terminate",
+            ("wait", STARTUP_REAP_TIMEOUT_SECONDS),
+        ]
 
     def test_start_json_reports_early_process_exit(self):
         events = []
@@ -370,6 +438,7 @@ class TestStartCommand:
         assert result.exit_code == 1
         payload = _parse_single_json_line(result.output)
         assert payload["status"] == "failed"
+        assert payload["lifecycle_contract_version"] == 1
         assert "exit code 7" in payload["error"]
         assert events == ["wait"]
 
@@ -383,6 +452,7 @@ class TestStartCommand:
         assert result.exit_code == 1
         payload = _parse_single_json_line(result.output)
         assert payload["status"] == "failed"
+        assert payload["lifecycle_contract_version"] == 1
         assert "not executable" in payload["error"]
 
     def test_start_json_rejects_foreground(self):
@@ -392,6 +462,7 @@ class TestStartCommand:
         assert result.exit_code == 1
         payload = _parse_single_json_line(result.output)
         assert payload["status"] == "failed"
+        assert payload["lifecycle_contract_version"] == 1
         assert "--foreground" in payload["error"]
 
 
