@@ -88,6 +88,10 @@ print(ctx["card_count"], "cards,", len(ctx["decisions"]), "decisions made")
 
 Deep links: `http://localhost:7741/#study=sepsis-v1` opens directly to a study.
 
+Studies live in a `.vitrine/` directory: the nearest one at or above the directory you run from, or a new one there. Every git worktree of a repository shares the main checkout's store, so work on a branch lands in the same study as the rest of the project; a worktree that already has its own `.vitrine/` keeps it. Set `VITRINE_DATA_DIR` to put the store somewhere else.
+
+Each study is `.vitrine/studies/<study>/`, and its `index.json` is rewritten whenever a card is added or changed. A tool that embeds Vitrine can watch those files to notice new cards without a running server; `vitrine status --json` reports the store as `data_dir`.
+
 ### Human-in-the-Loop Decisions
 
 Block execution until a researcher confirms, chooses, or steers:

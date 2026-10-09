@@ -264,6 +264,49 @@ def terminate_spawned_process(
 # ---------------------------------------------------------------------------
 
 
+def _linked_worktree(start: Path) -> tuple[Path, Path] | None:
+    """Find the linked git worktree holding ``start`` and its main checkout.
+
+    A linked worktree's root holds a ``.git`` *file* naming its private git
+    directory, whose ``commondir`` file names the repository's shared one at
+    ``<main checkout>/.git``. Both are read directly, so resolution spawns no
+    process and works where git is not installed.
+
+    Returns ``(worktree root, main checkout root)``, or ``None`` in a main
+    checkout, outside a repository, in a submodule, and for worktrees of a
+    bare repository, which has no main checkout.
+    """
+    for directory in [start, *start.parents]:
+        dot_git = directory / ".git"
+        if dot_git.is_dir():
+            return None
+        if not dot_git.is_file():
+            continue
+        try:
+            pointer = dot_git.read_text(encoding="utf-8").strip()
+            if not pointer.startswith("gitdir:"):
+                return None
+            git_dir = (directory / pointer[len("gitdir:") :].strip()).resolve()
+            common_dir = (
+                git_dir / (git_dir / "commondir").read_text(encoding="utf-8").strip()
+            ).resolve()
+        except (OSError, UnicodeDecodeError):
+            return None
+        return (directory, common_dir.parent) if common_dir.name == ".git" else None
+    return None
+
+
+def _nearest_vitrine_dir(start: Path, stop: Path | None = None) -> Path | None:
+    """Find an existing ``.vitrine/`` in ``start`` or its parents, up to ``stop``."""
+    for directory in [start, *start.parents]:
+        candidate = directory / ".vitrine"
+        if candidate.exists():
+            return candidate
+        if directory == stop:
+            break
+    return None
+
+
 def get_vitrine_dir() -> Path:
     """Resolve the vitrine directory.
 
@@ -272,19 +315,26 @@ def get_vitrine_dir() -> Path:
     2. Walk up from cwd looking for an existing ``.vitrine/`` directory
     3. Default: ``cwd / ".vitrine"``
 
+    A linked git worktree that has no ``.vitrine/`` of its own resolves as if
+    run from its main checkout's root, so every worktree of a repository
+    shares one study store. Its search for its own store stops at the
+    worktree's root: a store further up belongs to whatever directory happens
+    to hold the worktrees.
+
     Returns the path without performing migration (caller handles that).
     """
     env = os.getenv("VITRINE_DATA_DIR")
     if env:
         return Path(env)
-    # Walk up from cwd looking for existing .vitrine/
     cwd = Path.cwd()
-    for parent in [cwd, *cwd.parents]:
-        candidate = parent / ".vitrine"
-        if candidate.exists():
-            return candidate
-    # Default: cwd / ".vitrine"
-    return cwd / ".vitrine"
+    linked = _linked_worktree(cwd)
+    if linked is not None:
+        worktree_root, main_checkout = linked
+        own = _nearest_vitrine_dir(cwd, stop=worktree_root)
+        if own is not None:
+            return own
+        cwd = main_checkout
+    return _nearest_vitrine_dir(cwd) or cwd / ".vitrine"
 
 
 # ---------------------------------------------------------------------------
