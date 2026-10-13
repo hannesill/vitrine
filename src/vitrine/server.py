@@ -49,6 +49,8 @@ from vitrine._types import CardDescriptor
 from vitrine._utils import (
     SERVER_BIND_HOST,
     SUPPORTED_DISPLAY_HOSTS,
+    browser_opening_enabled,
+    keep_out_of_git,
     package_version,
 )
 from vitrine.artifacts import ArtifactStore, _serialize_card
@@ -608,7 +610,7 @@ class DisplayServer:
                 file=sys.stderr,
             )
 
-            if open_browser:
+            if open_browser and browser_opening_enabled():
                 try:
                     import webbrowser
 
@@ -668,6 +670,7 @@ class DisplayServer:
         """Write the PID file with server metadata."""
         self._pid_path = pid_path
         pid_path.parent.mkdir(parents=True, exist_ok=True)
+        keep_out_of_git(pid_path.parent)
         self.data_dir = pid_path.parent.resolve()
         info = {
             "pid": os.getpid(),

@@ -366,6 +366,7 @@ def _ensure_started(
     6. Fallback in-thread server if polling fails
     """
     from vitrine._utils import (
+        keep_out_of_git,
         lock_file,
         terminate_spawned_process,
         unlock_file,
@@ -393,6 +394,7 @@ def _ensure_started(
         should_start_process = False
         lock_path = _lock_file_path()
         lock_path.parent.mkdir(parents=True, exist_ok=True)
+        keep_out_of_git(lock_path.parent)
         with open(lock_path, "w") as lock_fd:
             try:
                 lock_file(lock_fd)

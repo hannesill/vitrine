@@ -307,6 +307,42 @@ def _nearest_vitrine_dir(start: Path, stop: Path | None = None) -> Path | None:
     return None
 
 
+_STORE_GITIGNORE = "# Written by vitrine: study data stays out of version control.\n*\n"
+
+
+def keep_out_of_git(vitrine_dir: Path) -> None:
+    """Make git ignore the study store.
+
+    The store holds the rows behind every card, which can be patient-level,
+    and the running server's access token. A ``.gitignore`` of ``*`` inside
+    the directory ignores everything in it, itself included: the store does
+    not show up as untracked, ``git add -A`` does not sweep it into a commit
+    (tools that snapshot a project folder do exactly that), and
+    ``git clean -fd`` leaves the cards alone. A ``.gitignore`` that is already
+    there is the user's and is left as it is.
+    """
+    path = vitrine_dir / ".gitignore"
+    if path.exists():
+        return
+    try:
+        vitrine_dir.mkdir(parents=True, exist_ok=True)
+        path.write_text(_STORE_GITIGNORE)
+    except OSError:
+        # A read-only store still works; it is just not protected.
+        pass
+
+
+def browser_opening_enabled() -> bool:
+    """Whether starting a server may open the system browser.
+
+    ``VITRINE_OPEN_BROWSER=0`` turns it off for a whole environment. A host
+    application that shows the board itself sets it, so that an agent's first
+    ``show()`` does not also open the board in a separate browser.
+    """
+    value = os.getenv("VITRINE_OPEN_BROWSER", "").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
 def get_vitrine_dir() -> Path:
     """Resolve the vitrine directory.
 

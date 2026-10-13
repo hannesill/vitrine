@@ -137,3 +137,71 @@ class TestOutsideLinkedWorktrees:
         monkeypatch.chdir(plain)
 
         assert get_vitrine_dir() == plain / ".vitrine"
+
+
+class TestStoreStaysOutOfGit:
+    """The store holds card data and the server's token; git must not see it."""
+
+    def test_new_store_is_ignored_by_git(self, repository):
+        from vitrine.study_manager import StudyManager
+
+        store = repository / ".vitrine"
+        manager = StudyManager(store)
+        manager.get_or_create_study("demo")
+        (store / ".server.json").write_text("{}")
+
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        assert status == ""
+
+        # What a tool that snapshots the folder does.
+        _git(repository, "add", "-A")
+        staged = subprocess.run(
+            ["git", "diff", "--cached", "--name-only"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        assert staged == ""
+
+    def test_git_clean_keeps_the_cards(self, repository):
+        from vitrine.study_manager import StudyManager
+
+        store = repository / ".vitrine"
+        StudyManager(store).get_or_create_study("demo")
+        _git(repository, "clean", "-fd")
+        assert (store / "studies").is_dir()
+
+    def test_an_existing_gitignore_is_left_alone(self, tmp_path):
+        from vitrine._utils import keep_out_of_git
+
+        store = tmp_path / ".vitrine"
+        store.mkdir()
+        (store / ".gitignore").write_text("studies/\n")
+        keep_out_of_git(store)
+        assert (store / ".gitignore").read_text() == "studies/\n"
+
+
+class TestBrowserOpening:
+    @pytest.mark.parametrize("value", ["0", "false", "No", " off "])
+    def test_environment_can_turn_it_off(self, monkeypatch, value):
+        from vitrine._utils import browser_opening_enabled
+
+        monkeypatch.setenv("VITRINE_OPEN_BROWSER", value)
+        assert browser_opening_enabled() is False
+
+    @pytest.mark.parametrize("value", [None, "", "1", "true"])
+    def test_default_is_on(self, monkeypatch, value):
+        from vitrine._utils import browser_opening_enabled
+
+        if value is None:
+            monkeypatch.delenv("VITRINE_OPEN_BROWSER", raising=False)
+        else:
+            monkeypatch.setenv("VITRINE_OPEN_BROWSER", value)
+        assert browser_opening_enabled() is True

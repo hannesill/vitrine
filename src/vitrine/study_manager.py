@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from vitrine._types import CardDescriptor, CardType
+from vitrine._utils import keep_out_of_git
 from vitrine.artifacts import ArtifactStore
 
 logger = logging.getLogger(__name__)
@@ -121,6 +122,7 @@ class StudyManager:
         self._studies_dir = vitrine_dir / "studies"
         # Ensure directories exist
         self._studies_dir.mkdir(parents=True, exist_ok=True)
+        keep_out_of_git(vitrine_dir)
 
         # In-memory state
         self._stores: dict[str, ArtifactStore] = {}  # dir_name -> ArtifactStore
