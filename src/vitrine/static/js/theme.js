@@ -6,29 +6,53 @@
 var _sunIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>';
 var _moonIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>';
 
-function initTheme() {
-  var saved = localStorage.getItem('vitrine-theme');
-  if (saved === 'dark') {
-    document.documentElement.setAttribute('data-theme', 'dark');
-    themeToggleEl.innerHTML = _sunIcon;
-  } else {
-    themeToggleEl.innerHTML = _moonIcon;
+// The board follows the system's colour scheme, which is also what a host
+// application's embedded browser reports, until the reader picks a side with
+// the toggle. Picking the side the system is already on hands control back.
+var _systemDark = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+
+function _savedTheme() {
+  try {
+    var saved = localStorage.getItem('vitrine-theme');
+    return saved === 'dark' || saved === 'light' ? saved : null;
+  } catch (e) {
+    return null;
   }
 }
 
-themeToggleEl.onclick = function() {
-  var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-  if (isDark) {
-    document.documentElement.removeAttribute('data-theme');
-    localStorage.setItem('vitrine-theme', 'light');
-    themeToggleEl.innerHTML = _moonIcon;
-    _swapHljsTheme(false);
-  } else {
+function _applyTheme(dark) {
+  if (dark) {
     document.documentElement.setAttribute('data-theme', 'dark');
-    localStorage.setItem('vitrine-theme', 'dark');
-    themeToggleEl.innerHTML = _sunIcon;
-    _swapHljsTheme(true);
+  } else {
+    document.documentElement.removeAttribute('data-theme');
   }
+  themeToggleEl.innerHTML = dark ? _sunIcon : _moonIcon;
+  _swapHljsTheme(dark);
+}
+
+function initTheme() {
+  var saved = _savedTheme();
+  _applyTheme(saved ? saved === 'dark' : !!(_systemDark && _systemDark.matches));
+}
+
+if (_systemDark && _systemDark.addEventListener) {
+  _systemDark.addEventListener('change', function(event) {
+    if (!_savedTheme()) _applyTheme(event.matches);
+  });
+}
+
+themeToggleEl.onclick = function() {
+  var dark = document.documentElement.getAttribute('data-theme') !== 'dark';
+  try {
+    if (_systemDark && _systemDark.matches === dark) {
+      localStorage.removeItem('vitrine-theme');
+    } else {
+      localStorage.setItem('vitrine-theme', dark ? 'dark' : 'light');
+    }
+  } catch (e) {
+    // Without storage the choice still holds for this page.
+  }
+  _applyTheme(dark);
 };
 
 // Swap highlight.js theme if loaded
