@@ -166,9 +166,16 @@ def is_pid_alive(pid: int) -> bool:
     else:
         try:
             os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            # The process exists but may not be signalled from here, as from
+            # inside an agent's sandbox. Treating that as dead discarded a
+            # running server's metadata and left the server orphaned.
             return True
         except OSError:
             return False
+        return True
 
 
 # ---------------------------------------------------------------------------

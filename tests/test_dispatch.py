@@ -19,6 +19,7 @@ Tests cover:
 
 import json
 import os
+import sys
 import subprocess
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -1067,6 +1068,22 @@ class TestIsPidAlive:
 
     def test_very_large_pid_is_dead(self):
         assert _is_pid_alive(999_999_999) is False
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+    def test_a_process_that_may_not_be_signalled_is_alive(self, monkeypatch):
+        def refuse(pid, signal):
+            raise PermissionError(1, "Operation not permitted")
+
+        monkeypatch.setattr(os, "kill", refuse)
+        assert _is_pid_alive(12345) is True
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+    def test_a_process_that_does_not_exist_is_dead(self, monkeypatch):
+        def missing(pid, signal):
+            raise ProcessLookupError(3, "No such process")
+
+        monkeypatch.setattr(os, "kill", missing)
+        assert _is_pid_alive(12345) is False
 
 
 # ---------------------------------------------------------------------------
