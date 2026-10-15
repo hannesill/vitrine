@@ -21,12 +21,22 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import pandas as pd
 
+
+def _identifier(words: str) -> str:
+    """A pattern for column names containing one of ``words`` as a whole part.
+
+    Parts are separated by anything but a letter or digit, so ``patient_city``
+    and ``Email`` match, while ``ethnicity`` and ``dobutamine_dose`` do not.
+    """
+    return rf"(?i)(?<![a-z0-9])(?:{words})(?![a-z0-9])"
+
+
 # Default patterns for columns likely to contain PHI
 _DEFAULT_IDENTIFIER_PATTERNS = [
-    r"(?i)(first|last|middle)_?name",
-    r"(?i)address|street|city|zip|postal",
-    r"(?i)phone|fax|email|ssn|mrn",
-    r"(?i)date_of_birth|dob",
+    _identifier(r"(?:first|last|middle)_?name"),
+    _identifier(r"address|street|city|zip|zip_?code|postal|postal_?code|post_?code"),
+    _identifier(r"phone|fax|e_?mail|ssn|mrn"),
+    _identifier(r"date_of_birth|birth_?date|dob"),
 ]
 
 _DEFAULT_MAX_ROWS = 10_000
