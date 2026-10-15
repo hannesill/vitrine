@@ -686,6 +686,85 @@ class TestServerLifecycle:
             "fallback-started",
         ]
 
+    def _find(self, monkeypatch, tmp_path, *infos):
+        """Have _ensure_started find ``infos`` in turn; returns what it starts."""
+        found = iter(infos)
+        started = []
+        monkeypatch.setattr(_client_mod, "_ensure_study_manager", lambda: None)
+        monkeypatch.setattr(
+            _client_mod, "_lock_file_path", lambda: tmp_path / ".server.lock"
+        )
+        monkeypatch.setattr(_client_mod, "_discover_server", lambda: next(found))
+        monkeypatch.setattr(
+            _client_mod, "_start_process", lambda **kwargs: started.append(kwargs)
+        )
+        return started
+
+    def test_ensure_started_gives_a_running_server_the_owner(
+        self, monkeypatch, tmp_path
+    ):
+        """A host's VITRINE_OWNER_PID joins a server that another host started."""
+        monkeypatch.setenv("VITRINE_OWNER_PID", "4242")
+        info = _server_metadata(
+            tmp_path / ".server.json", owners=[{"pid": 111, "start_time": None}]
+        )
+        started = self._find(monkeypatch, tmp_path, info)
+        added = []
+        monkeypatch.setattr(
+            _client_mod,
+            "_add_server_owner",
+            lambda info, pid: added.append((info["session_id"], pid)) or [111, pid],
+        )
+
+        _client_mod._ensure_started(open_browser=False)
+
+        assert added == [("session", 4242)]
+        assert started == []
+        assert _st._remote_url == info["api_url"]
+
+    @pytest.mark.parametrize(("env", "owner"), [(None, 111), ("4242", 4242)])
+    def test_ensure_started_asks_nothing_without_a_new_owner(
+        self, monkeypatch, tmp_path, env, owner
+    ):
+        if env is not None:
+            monkeypatch.setenv("VITRINE_OWNER_PID", env)
+        info = _server_metadata(
+            tmp_path / ".server.json", owners=[{"pid": owner, "start_time": None}]
+        )
+        self._find(monkeypatch, tmp_path, info)
+
+        def add_owner(info, pid):
+            raise AssertionError("asked the server to take an owner")
+
+        monkeypatch.setattr(_client_mod, "_add_server_owner", add_owner)
+
+        _client_mod._ensure_started(open_browser=False)
+
+        assert _st._remote_url == info["api_url"]
+
+    def test_ensure_started_replaces_a_server_stopping_for_its_owners(
+        self, monkeypatch, tmp_path
+    ):
+        from vitrine._utils import OwnerRejected
+
+        monkeypatch.setenv("VITRINE_OWNER_PID", "4242")
+        pid_path = tmp_path / ".server.json"
+        stopping = _server_metadata(pid_path, session_id="stopping")
+        fresh = _server_metadata(
+            pid_path, session_id="fresh", owners=[{"pid": 4242, "start_time": None}]
+        )
+        started = self._find(monkeypatch, tmp_path, stopping, fresh)
+
+        def add_owner(info, pid):
+            raise OwnerRejected("stopping", "The server is stopping.")
+
+        monkeypatch.setattr(_client_mod, "_add_server_owner", add_owner)
+
+        _client_mod._ensure_started(open_browser=False)
+
+        assert len(started) == 1
+        assert _st._session_id == "fresh"
+
 
 class TestClientMode:
     """Test that show/section push via HTTP when _remote_url is set.
