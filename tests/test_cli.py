@@ -582,6 +582,28 @@ class TestOwnerPid:
         assert "--owner-pid" not in popen.call_args.args[0]
         assert _parse_single_json_line(result.output)["owner_pids"] == []
 
+    def test_foreground_start_that_loses_the_race_adds_the_owner(self):
+        # Another start took the lock first, and its server lacks our owner.
+        info = _running_info()
+        with (
+            patch("vitrine._utils.is_pid_alive", return_value=True),
+            patch("vitrine.server_status", side_effect=[None, None, info]),
+            patch("vitrine.server._run_standalone", return_value=False) as run,
+            patch(
+                "vitrine.client._add_server_owner", return_value=[111, 4242]
+            ) as add_owner,
+            patch("vitrine.cli.time.sleep"),
+        ):
+            result = runner.invoke(
+                app, ["start", "--foreground", "--no-open", "--owner-pid", "4242"]
+            )
+
+        assert result.exit_code == 0
+        run.assert_called_once_with(port=7741, no_open=True, owner_pids=[4242])
+        add_owner.assert_called_once_with(info, 4242)
+        assert "already running" in result.output
+        assert "111, 4242" in result.output
+
     def test_start_rejects_an_invalid_owner(self):
         with (
             patch("vitrine.server_status") as server_status,
