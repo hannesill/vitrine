@@ -27,22 +27,21 @@ function renderTable(container, cardData) {
   var rowInfoEl = document.createElement('span');
   var pagerEl = { current: null };
 
-  // "N rows"; for a table the row limit cut short, "N of M rows (row limit)".
-  function rowCount(total) {
-    if (preview.truncated_from && total === shape[0]) {
-      return total.toLocaleString() + ' of ' + preview.truncated_from.toLocaleString() + ' rows (row limit)';
-    }
-    return total.toLocaleString() + ' rows';
+  // For a table the row limit cut short; search and paging only see the rows kept.
+  function rowLimitNote() {
+    if (!preview.truncated_from) return '';
+    return ' \u00b7 first ' + shape[0].toLocaleString() + ' of ' +
+      preview.truncated_from.toLocaleString() + ' rows kept (row limit)';
   }
 
   function updateRowInfo() {
     var total = totalRowsRef.value;
     var start = total > 0 ? pagerState.offset + 1 : 0;
     var end = Math.min(pagerState.offset + pagerState.limit, total);
-    var text = shape[1] + ' columns \u00b7 ' + rowCount(total);
+    var text = shape[1] + ' columns \u00b7 ' + total.toLocaleString() + ' rows';
     if (searchState.text) text += ' (filtered)';
     if (total > 0 && (start > 1 || end < total)) text += ' (showing ' + start + '\u2013' + end + ')';
-    rowInfoEl.textContent = text;
+    rowInfoEl.textContent = text + rowLimitNote();
   }
 
   // --- Toolbar (search + export) ---
@@ -203,7 +202,7 @@ function renderTable(container, cardData) {
     info.appendChild(pager);
   } else {
     // Small table — preview is the full data
-    rowInfoEl.textContent = shape[1] + ' columns \u00b7 ' + rowCount(totalRows);
+    rowInfoEl.textContent = shape[1] + ' columns \u00b7 ' + totalRows.toLocaleString() + ' rows' + rowLimitNote();
   }
 
   container.appendChild(wrapper);

@@ -95,7 +95,7 @@ class TestRenderDataFrame:
 
     def test_untruncated_table_has_no_note(self, store, redactor, sample_df):
         card = render(sample_df, store=store, redactor=redactor)
-        assert "truncated_from" not in card.preview
+        assert card.preview["truncated_from"] is None
 
     def test_parquet_artifact_on_disk(self, store, redactor, sample_df):
         card = render(sample_df, store=store, redactor=redactor)
