@@ -11,6 +11,10 @@ Tests cover:
 - Blocking response flow
 """
 
+import os
+import socket
+import sys
+
 import pandas as pd
 import pytest
 
@@ -121,6 +125,15 @@ class TestPortDiscovery:
             def __exit__(self, *_args):
                 return False
 
+            def settimeout(self, _timeout):
+                pass
+
+            def setsockopt(self, *_args):
+                pass
+
+            def connect(self, _address):
+                raise ConnectionRefusedError
+
             def bind(self, address):
                 attempts.append(address)
                 if address[1] == 7741:
@@ -131,6 +144,112 @@ class TestPortDiscovery:
 
         assert srv._find_port() == 7742
         assert attempts == [("127.0.0.1", 7741), ("127.0.0.1", 7742)]
+
+    @pytest.mark.parametrize("reuse_address", [True, False])
+    def test_find_port_sets_reuseaddr_only_where_asyncio_does(
+        self, store, monkeypatch, reuse_address
+    ):
+        options = []
+        connects = []
+
+        class FakeSocket:
+            def __init__(self, *_args):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def settimeout(self, _timeout):
+                pass
+
+            def setsockopt(self, *args):
+                options.append(args)
+
+            def connect(self, address):
+                connects.append(address)
+                raise ConnectionRefusedError
+
+            def bind(self, _address):
+                pass
+
+        monkeypatch.setattr(server_mod, "_REUSE_ADDRESS", reuse_address)
+        monkeypatch.setattr(server_mod.socket, "socket", FakeSocket)
+        srv = DisplayServer(store=store, port=7741)
+
+        assert srv._find_port() == 7741
+        if reuse_address:
+            assert options == [(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)]
+            assert connects == [("127.0.0.1", 7741)]
+        else:
+            # On Windows SO_REUSEADDR would let the probe bind over a live
+            # listener, so the probe must stay a plain bind there.
+            assert options == []
+            assert connects == []
+
+    @pytest.mark.parametrize(
+        "listener_host",
+        [
+            "127.0.0.1",
+            pytest.param(
+                "0.0.0.0",
+                marks=pytest.mark.skipif(
+                    sys.platform == "win32",
+                    reason="the probe sets SO_REUSEADDR only on POSIX",
+                ),
+            ),
+        ],
+    )
+    def test_find_port_skips_live_listener(self, store, listener_host):
+        srv = DisplayServer(store=store, port=7741, host="127.0.0.1")
+        port = srv._find_port()
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            # Bind like uvicorn does. On macOS, SO_REUSEADDR lets a bind to
+            # 127.0.0.1 succeed beside a wildcard listener on the same port.
+            if os.name == "posix":
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind((listener_host, port))
+            listener.listen()
+
+            assert srv._find_port() != port
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="the probe sets SO_REUSEADDR only on POSIX",
+    )
+    def test_find_port_reuses_port_left_in_time_wait(self, store):
+        srv = DisplayServer(store=store, port=7741, host="127.0.0.1")
+        srv.start(open_browser=False)
+        port = srv.port
+        try:
+            # Read until the server hangs up, so the server closes first and
+            # its end of the connection lingers in TIME_WAIT on its port.
+            with socket.create_connection(("127.0.0.1", port), timeout=5) as client:
+                client.sendall(
+                    b"GET /api/health HTTP/1.1\r\n"
+                    b"Host: 127.0.0.1\r\n"
+                    b"Connection: close\r\n\r\n"
+                )
+                while client.recv(4096):
+                    pass
+        finally:
+            srv.stop()
+
+        # A plain bind fails while TIME_WAIT lasts; the probe must not.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as plain:
+            with pytest.raises(OSError):
+                plain.bind(("127.0.0.1", port))
+
+        assert srv._find_port() == port
+
+        srv.start(open_browser=False)
+        try:
+            assert srv.port == port
+        finally:
+            srv.stop()
 
 
 class TestStarletteApp:
