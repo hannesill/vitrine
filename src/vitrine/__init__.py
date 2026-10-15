@@ -236,6 +236,12 @@ def show(
                 "artifact_type": card.artifact_type,
             },
         )
+        if updated is not None:
+            # The original card now shows the new content and artifact; drop
+            # the copy render() indexed, so the study lists the card once.
+            replace_store.remove_from_index(card.card_id)
+            if _st._study_manager is not None:
+                _st._study_manager.refresh()
         # Broadcast an update (not add) so frontend re-renders in place
         update_card = updated if updated else card
         if _st._remote_url:
@@ -250,7 +256,7 @@ def show(
             )
         elif _st._server is not None:
             _st._server.push_update(replace, update_card)
-        return card.card_id
+        return replace if updated is not None else card.card_id
 
     card = render(
         obj,
