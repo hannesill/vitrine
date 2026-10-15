@@ -142,10 +142,10 @@ def _render_dataframe(
         "dtypes": dtypes,
         "shape": list(redacted_df.shape),
         "preview_rows": preview_rows,
+        # Rows before the row cap (VITRINE_MAX_ROWS) dropped the rest; the card
+        # says so. Always present, so replacing a cut table clears it.
+        "truncated_from": len(df) if was_truncated else None,
     }
-    if was_truncated:
-        # The row cap (VITRINE_MAX_ROWS) dropped the rest; the card says so.
-        preview["truncated_from"] = len(df)
 
     card = CardDescriptor(
         card_id=card_id,
