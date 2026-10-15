@@ -14,11 +14,15 @@ stays lightweight. The artifact store uses a session directory layout:
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import logging
+import os
 import re
 import shutil
+import tempfile
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -143,18 +147,72 @@ class ArtifactStore:
         # Ensure directories exist
         self._artifacts_dir.mkdir(parents=True, exist_ok=True)
 
-        # Initialize index if it doesn't exist
+        # Initialize index and session metadata if they don't exist. Checked
+        # again under the lock: a client that starts later must not reset what
+        # another one has written meanwhile.
         if not self._index_path.exists():
-            self._write_index([])
+            with self._changing(self._index_path):
+                if not self._index_path.exists():
+                    self._write_index([])
 
-        # Write session metadata
         if not self._meta_path.exists():
-            meta = {
-                "session_id": session_id,
-                "start_time": datetime.now(timezone.utc).isoformat(),
-                "study_names": [],
-            }
-            self._meta_path.write_text(json.dumps(meta, indent=2))
+            with self._changing(self._meta_path):
+                if not self._meta_path.exists():
+                    self._write_json(
+                        self._meta_path,
+                        {
+                            "session_id": session_id,
+                            "start_time": datetime.now(timezone.utc).isoformat(),
+                            "study_names": [],
+                        },
+                    )
+
+    @contextlib.contextmanager
+    def _changing(self, path: Path) -> Iterator[None]:
+        """Hold an exclusive lock while reading, changing and writing ``path``.
+
+        Every worktree of a repository shares one store, and each client writes
+        the index itself before telling the server, so two agents can change a
+        study's files at the same time. Without the lock both read the same old
+        list and the last one to write drops the other's card.
+        """
+        from vitrine._utils import lock_file, unlock_file
+
+        lock_fd = None
+        try:
+            lock_fd = open(path.with_suffix(".lock"), "w")
+            lock_file(lock_fd, exclusive=True, blocking=True)
+        except OSError:
+            # A store that cannot hold a lock (a read-only one) is written as before.
+            if lock_fd is not None:
+                lock_fd.close()
+            lock_fd = None
+        try:
+            yield
+        finally:
+            if lock_fd is not None:
+                try:
+                    unlock_file(lock_fd)
+                except OSError:
+                    pass
+                lock_fd.close()
+
+    @staticmethod
+    def _write_json(path: Path, data: Any) -> None:
+        """Replace ``path`` in one step, so a reader never sees half a file.
+
+        A half-written index reads as empty, and appending to that would keep
+        only the new card.
+        """
+        fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp_path, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
 
     def _read_index(self) -> list[dict[str, Any]]:
         """Read the card index from disk."""
@@ -165,26 +223,28 @@ class ArtifactStore:
 
     def _write_index(self, cards: list[dict[str, Any]]) -> None:
         """Write the card index to disk."""
-        self._index_path.write_text(json.dumps(cards, indent=2))
+        self._write_json(self._index_path, cards)
 
     def _append_to_index(self, card_dict: dict[str, Any]) -> None:
         """Append a card to the index."""
-        cards = self._read_index()
-        cards.append(card_dict)
-        self._write_index(cards)
+        with self._changing(self._index_path):
+            cards = self._read_index()
+            cards.append(card_dict)
+            self._write_index(cards)
 
     def _track_study(self, study: str | None) -> None:
         """Track a study name in session metadata."""
         if not study:
             return
-        try:
-            meta = json.loads(self._meta_path.read_text())
-        except (json.JSONDecodeError, FileNotFoundError):
-            meta = {"session_id": self.session_id, "study_names": []}
-        names = meta.get("study_names", [])
-        if study not in names:
-            meta["study_names"] = [*names, study]
-            self._meta_path.write_text(json.dumps(meta, indent=2))
+        with self._changing(self._meta_path):
+            try:
+                meta = json.loads(self._meta_path.read_text())
+            except (json.JSONDecodeError, FileNotFoundError):
+                meta = {"session_id": self.session_id, "study_names": []}
+            names = meta.get("study_names", [])
+            if study not in names:
+                meta["study_names"] = [*names, study]
+                self._write_json(self._meta_path, meta)
 
     def store_card(self, card: CardDescriptor) -> None:
         """Store a card descriptor in the index.
@@ -553,16 +613,17 @@ class ArtifactStore:
         Returns:
             Updated CardDescriptor, or None if card not found.
         """
-        index = self._read_index()
-        for i, d in enumerate(index):
-            if d["card_id"] == card_id:
-                for key, value in changes.items():
-                    if key == "card_type" and isinstance(value, CardType):
-                        d[key] = value.value
-                    else:
-                        d[key] = value
-                self._write_index(index)
-                return _deserialize_card(d)
+        with self._changing(self._index_path):
+            index = self._read_index()
+            for d in index:
+                if d["card_id"] == card_id:
+                    for key, value in changes.items():
+                        if key == "card_type" and isinstance(value, CardType):
+                            d[key] = value.value
+                        else:
+                            d[key] = value
+                    self._write_index(index)
+                    return _deserialize_card(d)
         return None
 
     def rename_study(self, old_label: str, new_label: str) -> int:
@@ -575,14 +636,15 @@ class ArtifactStore:
         Returns:
             Number of cards updated.
         """
-        index = self._read_index()
-        count = 0
-        for d in index:
-            if d.get("study") == old_label:
-                d["study"] = new_label
-                count += 1
-        if count:
-            self._write_index(index)
+        with self._changing(self._index_path):
+            index = self._read_index()
+            count = 0
+            for d in index:
+                if d.get("study") == old_label:
+                    d["study"] = new_label
+                    count += 1
+            if count:
+                self._write_index(index)
         return count
 
     def relocate(self, new_dir: Path, new_session_id: str) -> None:
