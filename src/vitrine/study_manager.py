@@ -288,6 +288,8 @@ class StudyManager:
         # Update in-memory mappings
         del self._label_to_dir[old_label]
         self._label_to_dir[new_label] = new_dir_name
+        if self._default_label == old_label:
+            self._default_label = new_label
 
         if old_dir_name in self._stores:
             self._stores[new_dir_name] = self._stores.pop(old_dir_name)

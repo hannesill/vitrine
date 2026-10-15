@@ -130,6 +130,13 @@ class TestGetOrCreateStudy:
         assert first == second == "auto-20260101-000000"
         assert store1 is store2
 
+    def test_auto_label_follows_a_rename(self, manager):
+        first, _ = manager.get_or_create_study(None)
+        assert manager.rename_study(first, "renamed")
+        label, _ = manager.get_or_create_study(None)
+        assert label == "renamed"
+        assert [s["label"] for s in manager.list_studies()] == ["renamed"]
+
     def test_different_labels_different_studies(self, manager):
         _, store1 = manager.get_or_create_study("study-a")
         _, store2 = manager.get_or_create_study("study-b")
