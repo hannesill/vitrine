@@ -87,6 +87,16 @@ class TestRenderDataFrame:
         card = render(big_df, store=store, redactor=redactor)
         assert len(card.preview["preview_rows"]) == 20
 
+    def test_row_limit_is_recorded(self, store):
+        df = pd.DataFrame({"x": range(12)})
+        card = render(df, store=store, redactor=Redactor(enabled=True, max_rows=5))
+        assert card.preview["shape"] == [5, 1]
+        assert card.preview["truncated_from"] == 12
+
+    def test_untruncated_table_has_no_note(self, store, redactor, sample_df):
+        card = render(sample_df, store=store, redactor=redactor)
+        assert "truncated_from" not in card.preview
+
     def test_parquet_artifact_on_disk(self, store, redactor, sample_df):
         card = render(sample_df, store=store, redactor=redactor)
         parquet_path = store._artifacts_dir / f"{card.artifact_id}.parquet"
