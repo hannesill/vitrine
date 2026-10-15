@@ -13,6 +13,7 @@ Tests cover:
 """
 
 import json
+import multiprocessing
 
 import pandas as pd
 import pytest
@@ -508,3 +509,56 @@ class TestExportTableCsv:
         """FileNotFoundError when artifact does not exist."""
         with pytest.raises(FileNotFoundError):
             store.export_table_csv("nonexistent")
+
+
+# ---------------------------------------------------------------------------
+# Several writers on one study
+# ---------------------------------------------------------------------------
+
+
+def _publish_cards(session_dir: str, writer: int, count: int) -> None:
+    """One client publishing ``count`` cards, as an agent's script does."""
+    from pathlib import Path
+
+    store = ArtifactStore(session_dir=Path(session_dir), session_id="shared")
+    for i in range(count):
+        store.store_card(
+            CardDescriptor(
+                card_id=f"card-{writer}-{i}",
+                card_type=CardType.MARKDOWN,
+                title=f"Card {writer}-{i}",
+                timestamp="2025-01-01T00:00:00Z",
+                preview={"text": "x" * 2000},
+                study=f"study-{writer}",
+            )
+        )
+
+
+class TestSeveralWriters:
+    """Every worktree of a repository shares one store, and each client writes
+    the index itself, so two agents can publish to one study at once."""
+
+    def test_no_card_is_lost_when_clients_publish_at_the_same_time(self, tmp_path):
+        session_dir = tmp_path / "shared_session"
+        ArtifactStore(session_dir=session_dir, session_id="shared")
+        writers, per_writer = 6, 15
+        context = multiprocessing.get_context("spawn")
+        processes = [
+            context.Process(
+                target=_publish_cards, args=(str(session_dir), writer, per_writer)
+            )
+            for writer in range(writers)
+        ]
+        for process in processes:
+            process.start()
+        for process in processes:
+            process.join(timeout=60)
+            assert process.exitcode == 0
+
+        store = ArtifactStore(session_dir=session_dir, session_id="shared")
+        ids = {card.card_id for card in store.list_cards()}
+        assert ids == {
+            f"card-{w}-{i}" for w in range(writers) for i in range(per_writer)
+        }
+        meta = json.loads((session_dir / "meta.json").read_text())
+        assert set(meta["study_names"]) == {f"study-{w}" for w in range(writers)}
