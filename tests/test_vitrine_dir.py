@@ -112,6 +112,35 @@ class TestLinkedWorktree:
 
         assert get_vitrine_dir() == worktree / ".vitrine"
 
+    def test_a_bare_repository_named_dot_git_is_still_bare(
+        self, repository, tmp_path, monkeypatch
+    ):
+        # A common layout: `git clone --bare <url> project/.git`, worktrees beside it.
+        holder = (tmp_path / "bare-holder").resolve()
+        holder.mkdir()
+        _git(
+            tmp_path,
+            "clone",
+            "--quiet",
+            "--bare",
+            str(repository),
+            str(holder / ".git"),
+        )
+        worktree = holder / "main"
+        _git(
+            holder / ".git",
+            "worktree",
+            "add",
+            "--quiet",
+            str(worktree),
+            "-b",
+            "main-wt",
+        )
+
+        monkeypatch.chdir(worktree)
+
+        assert get_vitrine_dir() == worktree / ".vitrine"
+
 
 class TestOutsideLinkedWorktrees:
     def test_main_checkout_subdirectory_is_unchanged(self, repository, monkeypatch):

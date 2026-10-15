@@ -271,6 +271,29 @@ def terminate_spawned_process(
 # ---------------------------------------------------------------------------
 
 
+def _is_bare_repository(git_dir: Path) -> bool:
+    """Whether the repository at ``git_dir`` is bare, by ``core.bare`` in its config.
+
+    Read from the file, like the rest of resolution. A bare repository can sit
+    in a directory named ``.git`` (``git clone --bare <url> project/.git``), so
+    the name alone does not tell.
+    """
+    try:
+        lines = (git_dir / "config").read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return False
+    section = ""
+    for raw in lines:
+        line = raw.split("#", 1)[0].split(";", 1)[0].strip()
+        if line.startswith("["):
+            section = line.strip("[]").strip().lower()
+        elif section == "core" and "=" in line:
+            key, value = (part.strip().lower() for part in line.split("=", 1))
+            if key == "bare":
+                return value in {"true", "yes", "on", "1"}
+    return False
+
+
 def _linked_worktree(start: Path) -> tuple[Path, Path] | None:
     """Find the linked git worktree holding ``start`` and its main checkout.
 
@@ -299,7 +322,9 @@ def _linked_worktree(start: Path) -> tuple[Path, Path] | None:
             ).resolve()
         except (OSError, UnicodeDecodeError):
             return None
-        return (directory, common_dir.parent) if common_dir.name == ".git" else None
+        if common_dir.name != ".git" or _is_bare_repository(common_dir):
+            return None
+        return (directory, common_dir.parent)
     return None
 
 
