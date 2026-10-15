@@ -2,10 +2,10 @@
 
 Usage:
     vitrine doctor  [--json]
-    vitrine restart [--port PORT] [--no-open]
-    vitrine start   [--port PORT] [--no-open]
-    vitrine stop
-    vitrine status
+    vitrine restart [--port PORT] [--no-open] [--owner-pid PID] [--json]
+    vitrine start   [--port PORT] [--no-open] [--owner-pid PID] [--json]
+    vitrine stop    [--json]
+    vitrine status  [--json]
     vitrine studies
     vitrine clean OLDER_THAN
     vitrine export PATH [--format FORMAT] [--study STUDY]
@@ -16,13 +16,14 @@ from __future__ import annotations
 import json
 import sys
 import time
-from typing import Any
+from typing import Any, NoReturn
 
 import typer
 from rich.console import Console
 
 from vitrine._utils import (
     HEALTH_CHECK_TIMEOUT_SECONDS,
+    OWNER_PID_ENV,
     PROCESS_REAP_TIMEOUT_SECONDS,
 )
 
@@ -49,6 +50,8 @@ STARTUP_COMMAND_BUDGET_SECONDS = (
     + STARTUP_POLL_INTERVAL_SECONDS
     + STARTUP_CLEANUP_BUDGET_SECONDS
 )
+# A server whose owners have all exited joins its thread, then exits.
+STOPPING_SERVER_WAIT_SECONDS = 2 * PROCESS_REAP_TIMEOUT_SECONDS
 
 
 class _StartFailure(RuntimeError):
@@ -82,7 +85,7 @@ def _lifecycle_payload(
     version: str | None = None,
 ) -> dict[str, Any]:
     """Build the stable machine-readable lifecycle response."""
-    from vitrine._utils import get_vitrine_dir
+    from vitrine._utils import get_vitrine_dir, owner_pids
 
     info = info or {}
     api_url = info.get("api_url")
@@ -98,6 +101,7 @@ def _lifecycle_payload(
         "pid": info.get("pid"),
         "port": port,
         "session_id": info.get("session_id"),
+        "owner_pids": owner_pids(info) if info else None,
         "data_dir": info.get("data_dir", str(get_vitrine_dir().resolve())),
         "version": version or info.get("version") or _package_version(),
         "error": error,
@@ -140,6 +144,138 @@ def _stop_server(json_output: bool) -> bool:
         _fail_metadata(exc, json_output)
 
 
+def _fail(message: str, json_output: bool) -> NoReturn:
+    if json_output:
+        _emit_json(_lifecycle_payload("failed", error=message))
+    else:
+        _error(message)
+    raise typer.Exit(EXIT_FAILURE)
+
+
+def _owner_option() -> Any:
+    return typer.Option(
+        None,
+        "--owner-pid",
+        envvar=OWNER_PID_ENV,
+        show_envvar=True,
+        help=(
+            "Stop the server once this process has exited, as `vitrine stop` "
+            "would. Joins the owners of a server that is already running."
+        ),
+    )
+
+
+def _requested_owner(value: str | None, json_output: bool) -> int | None:
+    """Read ``--owner-pid`` or ``VITRINE_OWNER_PID`` and check that it runs."""
+    from vitrine._utils import is_pid_alive, parse_owner_pid
+
+    try:
+        pid = parse_owner_pid(value)
+    except ValueError as exc:
+        _fail(str(exc), json_output)
+    if pid is not None and not is_pid_alive(pid):
+        _fail(f"Owner process {pid} is not running.", json_output)
+    return pid
+
+
+def _add_owners(
+    info: dict[str, Any], owners: list[int], json_output: bool
+) -> dict[str, Any] | None:
+    """Make ``owners`` owners of the running server ``info`` describes.
+
+    Returns ``info`` with the server's owners as they are now. Returns
+    ``None`` when that server was stopping because its own owners had exited
+    and has now stopped, so the caller can start a new one.
+    """
+    from vitrine._utils import OwnerRejected
+    from vitrine.client import _add_server_owner
+
+    for pid in owners:
+        try:
+            pids = _add_server_owner(info, pid)
+        except OwnerRejected as exc:
+            if exc.reason != "stopping":
+                _fail(str(exc), json_output)
+            _wait_for_stopping_server(info, json_output)
+            return None
+        if pids is None:
+            if not _still_running(info):
+                # It stopped once its own owners had exited, after we found it.
+                _wait_for_stopping_server(info, json_output)
+                return None
+            # A server from before owners. It keeps running; owner_pids
+            # tells a host its PID is not there.
+            if not json_output:
+                _info(
+                    f"The running server did not take process {pid} as an owner; "
+                    "restart it to have it stop with that process."
+                )
+            return info
+        info = {**info, "owners": [{"pid": p} for p in pids]}
+    return info
+
+
+def _add_missing_owners(
+    info: dict[str, Any], owners: list[int], json_output: bool
+) -> dict[str, Any]:
+    """Add the owners a just-started server lacks.
+
+    A server started concurrently by someone else can win the race to start,
+    and it did not get our owners on its command line.
+    """
+    from vitrine._utils import owner_pids
+
+    missing = [pid for pid in owners if pid not in owner_pids(info)]
+    if not missing:
+        return info
+    updated = _add_owners(info, missing, json_output)
+    if updated is None:
+        _fail("The server stopped as it started; try again.", json_output)
+    return updated
+
+
+def _still_running(info: dict[str, Any]) -> bool:
+    """Whether the server ``info`` describes still runs, after it did not answer."""
+    from vitrine import server_status
+    from vitrine._utils import ServerMetadataError
+
+    try:
+        current = server_status()
+    except ServerMetadataError:
+        return False  # Its process is still exiting after its HTTP server stopped.
+    return current is not None and current.get("session_id") == info.get("session_id")
+
+
+def _wait_for_stopping_server(info: dict[str, Any], json_output: bool) -> None:
+    """Wait until the server ``info`` describes, which is stopping, has gone."""
+    from vitrine import server_status
+    from vitrine._utils import ServerMetadataError
+
+    deadline = time.monotonic() + STOPPING_SERVER_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        try:
+            current = server_status()
+            if current is None or current.get("session_id") != info.get("session_id"):
+                return
+        except ServerMetadataError:
+            pass  # Its process is still exiting after its HTTP server stopped.
+        time.sleep(STARTUP_POLL_INTERVAL_SECONDS)
+    _fail(
+        "The running server is stopping because its owners exited, and it did "
+        f"not exit within {STOPPING_SERVER_WAIT_SECONDS:g}s; try again.",
+        json_output,
+    )
+
+
+def _report_owners(info: dict[str, Any]) -> None:
+    from vitrine._utils import owner_pids
+
+    pids = owner_pids(info)
+    if pids:
+        listed = ", ".join(str(pid) for pid in pids)
+        _info(f"Stops once its owners have exited: {listed}")
+
+
 @app.command()
 def doctor(
     json_output: bool = typer.Option(
@@ -173,10 +309,23 @@ def restart(
     json_output: bool = typer.Option(
         False, "--json", help="Emit machine-readable lifecycle JSON."
     ),
+    owner_pid: str | None = _owner_option(),
 ) -> None:
-    """Stop the running vitrine server and start a fresh one."""
+    """Stop the running vitrine server and start a fresh one.
+
+    The fresh server keeps the owners of the old one that are still running.
+    """
+    from vitrine._utils import is_same_process_alive
+
+    owner = _requested_owner(owner_pid, json_output)
     info = _server_status(json_output)
+    owners: list[int] = []
     if info:
+        owners = [
+            o["pid"]
+            for o in info.get("owners", [])
+            if is_same_process_alive(o["pid"], o.get("start_time"))
+        ]
         if not json_output:
             _info(
                 f"Stopping server (pid={info.get('pid')}, port={info.get('port')})..."
@@ -194,15 +343,22 @@ def restart(
     else:
         if not json_output:
             _info("No running server found — starting fresh.")
+    if owner is not None and owner not in owners:
+        owners.append(owner)
 
     try:
-        started = _start_background(port=port, no_open=no_open, json_output=json_output)
+        started = _start_background(
+            port=port, no_open=no_open, json_output=json_output, owner_pids=owners
+        )
     except _StartFailure as exc:
         if json_output:
             _emit_json(_lifecycle_payload("failed", error=str(exc)))
         raise typer.Exit(EXIT_FAILURE) from exc
+    started = _add_missing_owners(started, owners, json_output)
     if json_output:
         _emit_json(_lifecycle_payload("running", started))
+    else:
+        _report_owners(started)
 
 
 @app.command()
@@ -215,9 +371,15 @@ def start(
     json_output: bool = typer.Option(
         False, "--json", help="Emit machine-readable lifecycle JSON."
     ),
+    owner_pid: str | None = _owner_option(),
 ) -> None:
     """Start the vitrine server."""
+    owner = _requested_owner(owner_pid, json_output)
+    owners = [] if owner is None else [owner]
     info = _server_status(json_output)
+    if info and owners:
+        # None: it was stopping because its own owners had exited, and has.
+        info = _add_owners(info, owners, json_output)
     if info:
         if json_output:
             _emit_json(_lifecycle_payload("running", info))
@@ -226,6 +388,7 @@ def start(
                 f"Server already running (pid={info.get('pid')}, "
                 f"port={info.get('port')}, url={info.get('url')})"
             )
+            _report_owners(info)
         return
 
     if foreground:
@@ -236,18 +399,21 @@ def start(
         from vitrine.server import _run_standalone
 
         _info(f"Starting vitrine server on port {port}...")
-        _run_standalone(port=port, no_open=no_open)
+        _run_standalone(port=port, no_open=no_open, owner_pids=owners)
     else:
         try:
             started = _start_background(
-                port=port, no_open=no_open, json_output=json_output
+                port=port, no_open=no_open, json_output=json_output, owner_pids=owners
             )
         except _StartFailure as exc:
             if json_output:
                 _emit_json(_lifecycle_payload("failed", error=str(exc)))
             raise typer.Exit(EXIT_FAILURE) from exc
+        started = _add_missing_owners(started, owners, json_output)
         if json_output:
             _emit_json(_lifecycle_payload("running", started))
+        else:
+            _report_owners(started)
 
 
 @app.command()
@@ -293,6 +459,9 @@ def status(
         console.print(f"  [bold]Port:[/bold]       {info.get('port')}")
         console.print(f"  [bold]Session:[/bold]    {info.get('session_id')}")
         console.print(f"  [bold]Started:[/bold]    {info.get('started_at')}")
+        owners = ", ".join(str(o["pid"]) for o in info.get("owners", []))
+        if owners:
+            console.print(f"  [bold]Owners:[/bold]     {owners}")
     else:
         if json_output:
             _emit_json(_lifecycle_payload("stopped"))
@@ -365,6 +534,7 @@ def _start_background(
     no_open: bool = False,
     *,
     json_output: bool = False,
+    owner_pids: list[int] | None = None,
 ) -> dict[str, Any]:
     """Start the server as a background process and wait for it to come up."""
     import subprocess
@@ -378,6 +548,8 @@ def _start_background(
     ]
     if no_open:
         cmd.append("--no-open")
+    for owner_pid in owner_pids or []:
+        cmd += ["--owner-pid", str(owner_pid)]
 
     from vitrine._utils import (
         ServerMetadataError,

@@ -636,6 +636,52 @@ def stop_server() -> bool:
     return True
 
 
+def _add_server_owner(info: dict[str, Any], pid: int) -> list[int] | None:
+    """Ask the running server ``info`` describes to stop with ``pid`` as well.
+
+    Returns the server's owner PIDs. Returns ``None`` when the server did not
+    take the owner for a reason other than those below: a server from before
+    owners has no endpoint for it, or it did not answer.
+
+    Raises ``OwnerRejected`` when the process is not running, or when the
+    server is stopping because its owners have exited.
+    """
+    import urllib.error
+    import urllib.request
+
+    from vitrine._utils import OwnerRejected
+
+    url = info["api_url"]
+    request = urllib.request.Request(
+        f"{url}/api/owner",
+        data=json.dumps({"pid": pid}).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {info['token']}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            owner_pids = json.loads(response.read()).get("owner_pids")
+    except urllib.error.HTTPError as exc:
+        if exc.code not in (409, 503):
+            logger.debug(f"Server at {url} did not take owner {pid}: {exc.code}")
+            return None
+        try:
+            message = json.loads(exc.read()).get("message")
+        except Exception:
+            message = None
+        reason = "stopping" if exc.code == 503 else "not_running"
+        raise OwnerRejected(reason, message or f"Owner {pid} rejected") from exc
+    except Exception:
+        logger.debug(f"Server at {url} did not take owner {pid}")
+        return None
+    if not isinstance(owner_pids, list):
+        return None
+    return owner_pids
+
+
 def server_status() -> dict[str, Any] | None:
     """Return info about a running display server for this project, or None.
 

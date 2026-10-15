@@ -7,6 +7,7 @@ and file-type constants.
 
 from __future__ import annotations
 
+import functools
 import importlib.metadata
 import json
 import os
@@ -26,6 +27,10 @@ SUPPORTED_DISPLAY_HOSTS: frozenset[str] = frozenset(
 )
 HEALTH_CHECK_TIMEOUT_SECONDS = 2.0
 PROCESS_REAP_TIMEOUT_SECONDS = 3.0
+OWNER_PID_ENV = "VITRINE_OWNER_PID"
+OWNER_CHECK_INTERVAL_SECONDS = 2.0
+# PIDs are signed 32-bit numbers on POSIX; larger ones overflow os.kill.
+MAX_PID = 2**31 - 1
 
 
 class ServerMetadataError(RuntimeError):
@@ -34,6 +39,18 @@ class ServerMetadataError(RuntimeError):
 
 class ServerRestartRequired(ServerMetadataError):
     """Raised when metadata predates the current lifecycle contract."""
+
+
+class OwnerRejected(RuntimeError):
+    """Raised when a server does not take a process as an owner.
+
+    ``reason`` is ``"not_running"`` when the process is not running and
+    ``"stopping"`` when the server is stopping because its owners exited.
+    """
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 def package_version() -> str:
@@ -143,39 +160,235 @@ def load_server_metadata(pid_path: Path) -> dict[str, Any]:
             f"at {pid_path}"
         )
 
+    # Servers before owners were added write no "owners"; they have none.
+    owners = info.get("owners", [])
+    if not isinstance(owners, list) or not all(_is_owner(o) for o in owners):
+        raise _metadata_error(
+            pid_path, "owners must be a list of objects with a positive integer pid"
+        )
+
     return info
+
+
+def _is_owner(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    pid = value.get("pid")
+    start_time = value.get("start_time")
+    return (
+        type(pid) is int and pid > 0 and (start_time is None or type(start_time) is int)
+    )
+
+
+def owner_pids(info: dict[str, Any]) -> list[int]:
+    """The PIDs of the processes a server stops with, from its metadata."""
+    return [owner["pid"] for owner in info.get("owners", [])]
+
+
+def parse_owner_pid(value: str | None) -> int | None:
+    """Read an owner PID as given to ``--owner-pid`` or in ``VITRINE_OWNER_PID``.
+
+    Empty means no owner. Anything but a positive integer that fits a PID
+    raises ``ValueError``: a host that names an owner by mistake should hear
+    about it, not get a server that never stops.
+    """
+    if value is None or not value.strip():
+        return None
+    text = value.strip()
+    if not (text.isascii() and text.isdigit()) or not 0 < int(text) <= MAX_PID:
+        raise ValueError(f"An owner PID must be a positive integer, not {value!r}.")
+    return int(text)
 
 
 # ---------------------------------------------------------------------------
 # PID check
 # ---------------------------------------------------------------------------
 
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_ERROR_ACCESS_DENIED = 5
+_STILL_ACTIVE = 259
+
 
 def is_pid_alive(pid: int) -> bool:
     """Check if a process with the given PID is alive."""
     if sys.platform == "win32":
-        import ctypes
-
-        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-        if handle:
-            kernel32.CloseHandle(handle)
-            return True
+        return _windows_pid_alive(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
         return False
-    else:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            # The process exists but may not be signalled from here, as from
-            # inside an agent's sandbox. Treating that as dead discarded a
-            # running server's metadata and left the server orphaned.
-            return True
-        except OSError:
-            return False
+    except PermissionError:
+        # The process exists but may not be signalled from here, as from
+        # inside an agent's sandbox. Treating that as dead discarded a
+        # running server's metadata and left the server orphaned.
         return True
+    except (OSError, OverflowError):
+        return False
+    return True
+
+
+def _windows_pid_alive(pid: int) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = _windows_kernel32()
+    handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        # As with EPERM elsewhere: the process exists but may not be opened
+        # from here. A PID that is not in use fails with another error.
+        return ctypes.get_last_error() == _ERROR_ACCESS_DENIED
+    try:
+        # A process that has exited can still be opened while anyone holds a
+        # handle to it, such as the parent that started it, so ask whether it
+        # still runs. (One that exited with code 259 reads as running.)
+        exit_code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return True
+        return exit_code.value == _STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def process_start_time(pid: int) -> int | None:
+    """When process ``pid`` started, as a number that is only good for comparing.
+
+    With the PID it tells a process from a later one that was given the same
+    PID. Read from ``/proc`` on Linux, ``sysctl`` on macOS and
+    ``GetProcessTimes`` on Windows. ``None`` where the platform does not say,
+    the process is not there, or reading it fails: callers then fall back to
+    the PID alone.
+    """
+    record = _process_record(pid)
+    return None if record is None else record[0]
+
+
+def is_same_process_alive(pid: int, start_time: int | None) -> bool:
+    """Whether ``pid`` runs and is still the process that started at ``start_time``.
+
+    A process that has exited but is not reaped yet (a zombie) does not run.
+    Without a ``start_time``, or when the current one cannot be read, the PID
+    alone decides.
+    """
+    if not is_pid_alive(pid):
+        return False
+    record = _process_record(pid)
+    if record is None:
+        return True
+    current, exited = record
+    if exited:
+        return False
+    return start_time is None or current == start_time
+
+
+def _process_record(pid: int) -> tuple[int, bool] | None:
+    """``(start time, exited)`` of process ``pid``, or ``None`` if unknown."""
+    try:
+        if sys.platform.startswith("linux"):
+            return _linux_process(pid)
+        if sys.platform == "darwin":
+            return _darwin_process(pid)
+        if sys.platform == "win32":
+            # is_pid_alive already tells an exited process on Windows.
+            start_time = _windows_start_time(pid)
+            return None if start_time is None else (start_time, False)
+    except Exception:
+        return None
+    return None
+
+
+def _linux_process(pid: int, proc: Path = Path("/proc")) -> tuple[int, bool]:
+    stat = (proc / str(pid) / "stat").read_text()
+    # The command name before the fields is in parentheses and may hold
+    # spaces and parentheses itself, so count from the last one.
+    fields = stat[stat.rindex(")") + 2 :].split()
+    # Field 3 is the state, field 22 the start time in clock ticks after boot.
+    state, start_time = fields[3 - 3], int(fields[22 - 3])
+    return start_time, state in {"Z", "X", "x"}
+
+
+@functools.cache
+def _darwin_sysctl() -> Any:
+    import ctypes
+    import ctypes.util
+
+    libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+    sysctl = libc.sysctl
+    sysctl.argtypes = (
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.c_uint,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_size_t),
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+    )
+    sysctl.restype = ctypes.c_int
+    return sysctl
+
+
+def _darwin_process(pid: int) -> tuple[int, bool] | None:
+    import ctypes
+    import struct
+
+    ctl_kern, kern_proc, kern_proc_pid = 1, 14, 1
+    mib = (ctypes.c_int * 4)(ctl_kern, kern_proc, kern_proc_pid, pid)
+    buffer = ctypes.create_string_buffer(1024)  # struct kinfo_proc is 648 bytes
+    size = ctypes.c_size_t(ctypes.sizeof(buffer))
+    if _darwin_sysctl()(mib, 4, buffer, ctypes.byref(size), None, 0) != 0:
+        return None
+    if size.value == 0:  # no such process
+        return None
+    # struct kinfo_proc starts with struct extern_proc: p_starttime, a struct
+    # timeval, at offset 0, and the state p_stat at offset 36.
+    seconds, microseconds = struct.unpack_from("=qi", buffer.raw)
+    zombie = 5  # SZOMB
+    return seconds * 1_000_000 + microseconds, buffer.raw[36] == zombie
+
+
+@functools.cache
+def _windows_kernel32() -> Any:
+    import ctypes
+    from ctypes import wintypes
+
+    # An instance of our own, so these prototypes do not change ctypes.windll.
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetExitCodeProcess.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.GetProcessTimes.argtypes = (
+        wintypes.HANDLE,
+        *(ctypes.POINTER(wintypes.FILETIME),) * 4,
+    )
+    kernel32.GetProcessTimes.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    return kernel32
+
+
+def _windows_start_time(pid: int) -> int | None:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = _windows_kernel32()
+    handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return None
+    try:
+        created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
+        if not kernel32.GetProcessTimes(
+            handle,
+            ctypes.byref(created),
+            ctypes.byref(exited),
+            ctypes.byref(kernel),
+            ctypes.byref(user),
+        ):
+            return None
+        return (created.dwHighDateTime << 32) | created.dwLowDateTime
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 # ---------------------------------------------------------------------------

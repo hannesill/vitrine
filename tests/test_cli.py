@@ -132,6 +132,7 @@ class TestStatusCommand:
             "pid": 12345,
             "port": 7741,
             "session_id": "sess-123",
+            "owner_pids": [],
             "data_dir": str(data_dir.resolve()),
             "version": "9.8.7",
             "error": None,
@@ -524,3 +525,302 @@ class TestRestartCommand:
 
         assert result.exit_code == 1
         assert "failed to stop" in result.output.lower()
+
+
+class TestOwnerPid:
+    """--owner-pid / VITRINE_OWNER_PID: a server that stops with its owners."""
+
+    def _owned(self, *pids: int) -> dict:
+        return _running_info() | {
+            "owners": [{"pid": pid, "start_time": None} for pid in pids]
+        }
+
+    def test_start_passes_the_owner_to_the_new_server(self):
+        with (
+            patch("vitrine._utils.is_pid_alive", return_value=True),
+            patch("vitrine.server_status", side_effect=[None, self._owned(4242)]),
+            patch("subprocess.Popen") as popen,
+            patch("vitrine.client._add_server_owner") as add_owner,
+            patch("vitrine.cli.time.sleep"),
+        ):
+            result = runner.invoke(
+                app, ["start", "--no-open", "--json", "--owner-pid", "4242"]
+            )
+
+        assert result.exit_code == 0
+        payload = _parse_single_json_line(result.output)
+        assert payload["status"] == "running"
+        assert payload["owner_pids"] == [4242]
+        assert popen.call_args.args[0][-2:] == ["--owner-pid", "4242"]
+        add_owner.assert_not_called()
+
+    def test_start_reads_the_owner_from_the_environment(self):
+        with (
+            patch("vitrine._utils.is_pid_alive", return_value=True),
+            patch("vitrine.server_status", side_effect=[None, self._owned(4242)]),
+            patch("subprocess.Popen") as popen,
+            patch("vitrine.cli.time.sleep"),
+        ):
+            result = runner.invoke(
+                app,
+                ["start", "--no-open", "--json"],
+                env={"VITRINE_OWNER_PID": "4242"},
+            )
+
+        assert result.exit_code == 0
+        assert popen.call_args.args[0][-2:] == ["--owner-pid", "4242"]
+
+    def test_start_without_an_owner_passes_none(self):
+        with (
+            patch("vitrine.server_status", side_effect=[None, _running_info()]),
+            patch("subprocess.Popen") as popen,
+            patch("vitrine.cli.time.sleep"),
+        ):
+            result = runner.invoke(app, ["start", "--no-open", "--json"])
+
+        assert result.exit_code == 0
+        assert "--owner-pid" not in popen.call_args.args[0]
+        assert _parse_single_json_line(result.output)["owner_pids"] == []
+
+    def test_start_rejects_an_invalid_owner(self):
+        with (
+            patch("vitrine.server_status") as server_status,
+            patch("subprocess.Popen") as popen,
+        ):
+            result = runner.invoke(
+                app, ["start", "--json"], env={"VITRINE_OWNER_PID": "self"}
+            )
+
+        assert result.exit_code == 1
+        payload = _parse_single_json_line(result.output)
+        assert payload["status"] == "failed"
+        assert "positive integer" in payload["error"]
+        assert payload["owner_pids"] is None
+        server_status.assert_not_called()
+        popen.assert_not_called()
+
+    def test_start_rejects_an_owner_that_is_not_running(self):
+        with (
+            patch("vitrine._utils.is_pid_alive", return_value=False),
+            patch("vitrine.server_status") as server_status,
+            patch("subprocess.Popen") as popen,
+        ):
+            result = runner.invoke(app, ["start", "--json", "--owner-pid", "4242"])
+
+        assert result.exit_code == 1
+        payload = _parse_single_json_line(result.output)
+        assert payload["error"] == "Owner process 4242 is not running."
+        server_status.assert_not_called()
+        popen.assert_not_called()
+
+    def test_start_adds_the_owner_to_a_running_server(self):
+        info = self._owned(111)
+        with (
+            patch("vitrine._utils.is_pid_alive", return_value=True),
+            patch("vitrine.server_status", return_value=info),
+            patch(
+                "vitrine.client._add_server_owner", return_value=[111, 4242]
+            ) as add_owner,
+            patch("subprocess.Popen") as popen,
+        ):
+            result = runner.invoke(app, ["start", "--json", "--owner-pid", "4242"])
+
+        assert result.exit_code == 0
+        payload = _parse_single_json_line(result.output)
+        assert payload["status"] == "running"
+        assert payload["owner_pids"] == [111, 4242]
+        add_owner.assert_called_once_with(info, 4242)
+        popen.assert_not_called()
+
+    def test_start_without_an_owner_leaves_a_running_server_alone(self):
+        with (
+            patch("vitrine.server_status", return_value=self._owned(111)),
+            patch("vitrine.client._add_server_owner") as add_owner,
+        ):
+            result = runner.invoke(app, ["start", "--json"])
+
+        assert result.exit_code == 0
+        assert _parse_single_json_line(result.output)["owner_pids"] == [111]
+        add_owner.assert_not_called()
+
+    def test_a_server_from_before_owners_keeps_running_without_one(self):
+        with (
+            patch("vitrine._utils.is_pid_alive", return_value=True),
+            patch("vitrine.server_status", return_value=_running_info()),
+            patch("vitrine.client._add_server_owner", return_value=None),
+        ):
+            as_json = runner.invoke(app, ["start", "--json", "--owner-pid", "4242"])
+            human = runner.invoke(app, ["start", "--owner-pid", "4242"])
+
+        assert as_json.exit_code == 0
+        payload = _parse_single_json_line(as_json.output)
+        assert payload["status"] == "running"
+        assert payload["owner_pids"] == []
+        assert human.exit_code == 0
+        assert "did not take process 4242" in human.output
+
+    def test_start_fails_when_the_server_rejects_the_owner(self):
+        from vitrine._utils import OwnerRejected
+
+        rejected = OwnerRejected("not_running", "Owner process 4242 is not running.")
+        with (
+            patch("vitrine._utils.is_pid_alive", return_value=True),
+            patch("vitrine.server_status", return_value=_running_info()),
+            patch("vitrine.client._add_server_owner", side_effect=rejected),
+        ):
+            result = runner.invoke(app, ["start", "--json", "--owner-pid", "4242"])
+
+        assert result.exit_code == 1
+        payload = _parse_single_json_line(result.output)
+        assert payload["error"] == "Owner process 4242 is not running."
+
+    def test_start_replaces_a_server_stopping_for_its_owners(self):
+        from vitrine._utils import OwnerRejected, ServerMetadataError
+
+        stopping = OwnerRejected("stopping", "stopping")
+        statuses = [
+            self._owned(111),  # found, but its owner has just exited
+            ServerMetadataError("unreachable while its process exits"),
+            None,  # gone
+            None,  # _start_background: not started yet
+            self._owned(4242),
+        ]
+        with (
+            patch("vitrine._utils.is_pid_alive", return_value=True),
+            patch("vitrine.server_status", side_effect=statuses),
+            patch("vitrine.client._add_server_owner", side_effect=stopping),
+            patch("subprocess.Popen") as popen,
+            patch("vitrine.cli.time.sleep"),
+        ):
+            result = runner.invoke(
+                app, ["start", "--no-open", "--json", "--owner-pid", "4242"]
+            )
+
+        assert result.exit_code == 0
+        payload = _parse_single_json_line(result.output)
+        assert payload["owner_pids"] == [4242]
+        assert popen.call_args.args[0][-2:] == ["--owner-pid", "4242"]
+
+    def test_start_replaces_a_server_that_went_away_while_taking_the_owner(self):
+        # Its owners exited between finding it and asking it to take ours.
+        statuses = [self._owned(111), None, None, None, self._owned(4242)]
+        with (
+            patch("vitrine._utils.is_pid_alive", return_value=True),
+            patch("vitrine.server_status", side_effect=statuses),
+            patch("vitrine.client._add_server_owner", return_value=None),
+            patch("subprocess.Popen") as popen,
+            patch("vitrine.cli.time.sleep"),
+        ):
+            result = runner.invoke(
+                app, ["start", "--no-open", "--json", "--owner-pid", "4242"]
+            )
+
+        assert result.exit_code == 0
+        assert _parse_single_json_line(result.output)["owner_pids"] == [4242]
+        assert popen.call_args.args[0][-2:] == ["--owner-pid", "4242"]
+
+    def test_start_takes_over_a_server_that_replaced_a_stopping_one(self):
+        from vitrine._utils import OwnerRejected
+
+        other = _running_info() | {"session_id": "other", "pid": 54321}
+        statuses = [self._owned(111), other, other]
+        with (
+            patch("vitrine._utils.is_pid_alive", return_value=True),
+            patch("vitrine.server_status", side_effect=statuses),
+            patch(
+                "vitrine.client._add_server_owner",
+                side_effect=[OwnerRejected("stopping", "stopping"), [4242]],
+            ) as add_owner,
+            patch("subprocess.Popen"),
+            patch("vitrine.cli.time.sleep"),
+        ):
+            result = runner.invoke(
+                app, ["start", "--no-open", "--json", "--owner-pid", "4242"]
+            )
+
+        assert result.exit_code == 0
+        payload = _parse_single_json_line(result.output)
+        assert payload["session_id"] == "other"
+        assert payload["owner_pids"] == [4242]
+        assert add_owner.call_args.args == (other, 4242)
+
+    def test_start_fails_when_a_stopping_server_does_not_exit(self):
+        from vitrine._utils import OwnerRejected
+
+        with (
+            patch("vitrine._utils.is_pid_alive", return_value=True),
+            patch("vitrine.server_status", return_value=self._owned(111)),
+            patch(
+                "vitrine.client._add_server_owner",
+                side_effect=OwnerRejected("stopping", "stopping"),
+            ),
+            patch("vitrine.cli.STOPPING_SERVER_WAIT_SECONDS", 0),
+            patch("subprocess.Popen") as popen,
+        ):
+            result = runner.invoke(app, ["start", "--json", "--owner-pid", "4242"])
+
+        assert result.exit_code == 1
+        payload = _parse_single_json_line(result.output)
+        assert "stopping because its owners exited" in payload["error"]
+        popen.assert_not_called()
+
+    def test_start_adds_the_owner_to_a_server_started_concurrently(self):
+        # Someone else's server won the race; it did not get our owner.
+        with (
+            patch("vitrine._utils.is_pid_alive", return_value=True),
+            patch("vitrine.server_status", side_effect=[None, _running_info()]),
+            patch("subprocess.Popen"),
+            patch("vitrine.client._add_server_owner", return_value=[4242]) as add_owner,
+            patch("vitrine.cli.time.sleep"),
+        ):
+            result = runner.invoke(
+                app, ["start", "--no-open", "--json", "--owner-pid", "4242"]
+            )
+
+        assert result.exit_code == 0
+        assert _parse_single_json_line(result.output)["owner_pids"] == [4242]
+        add_owner.assert_called_once()
+
+    def test_restart_keeps_the_owners_that_still_run(self):
+        old = _running_info() | {
+            "owners": [{"pid": 111, "start_time": 5}, {"pid": 222, "start_time": 6}]
+        }
+        with (
+            patch("vitrine._utils.is_pid_alive", return_value=True),
+            patch(
+                "vitrine._utils.is_same_process_alive",
+                side_effect=lambda pid, start_time: pid == 111,
+            ),
+            patch(
+                "vitrine.server_status",
+                side_effect=[old, None, self._owned(111, 4242)],
+            ),
+            patch("vitrine.stop_server", return_value=True),
+            patch("subprocess.Popen") as popen,
+            patch("vitrine.client._add_server_owner") as add_owner,
+            patch("vitrine.cli.time.sleep"),
+        ):
+            result = runner.invoke(
+                app, ["restart", "--no-open", "--json", "--owner-pid", "4242"]
+            )
+
+        assert result.exit_code == 0
+        assert _parse_single_json_line(result.output)["owner_pids"] == [111, 4242]
+        command = popen.call_args.args[0]
+        assert command[-4:] == ["--owner-pid", "111", "--owner-pid", "4242"]
+        assert "222" not in command
+        add_owner.assert_not_called()
+
+    def test_human_output_names_the_owners(self):
+        with patch("vitrine.server_status", return_value=self._owned(111, 4242)):
+            status = runner.invoke(app, ["status"])
+            start = runner.invoke(app, ["start"])
+
+        assert "Owners:     111, 4242" in status.output
+        assert "Stops once its owners have exited: 111, 4242" in start.output
+
+    def test_no_server_reports_no_owners(self):
+        with patch("vitrine.server_status", return_value=None):
+            result = runner.invoke(app, ["status", "--json"])
+
+        assert _parse_single_json_line(result.output)["owner_pids"] is None

@@ -188,6 +188,7 @@ Large objects are persisted as Parquet/JSON/SVG on disk. The WebSocket sends lig
 vitrine start                          # Start server, open browser
 vitrine start --port 7742              # Custom port
 vitrine start --no-open                # Start without opening browser
+vitrine start --owner-pid 4242         # Stop once process 4242 has exited
 vitrine status                         # Show server status
 vitrine stop                           # Stop server (studies persist on disk)
 vitrine restart                        # Restart server
@@ -195,6 +196,32 @@ vitrine studies                        # List all studies
 vitrine clean 7d                       # Remove studies older than 7 days
 vitrine export report.html --study sepsis-v1
 ```
+
+### Host applications
+
+An app that runs Vitrine for its users drives the server with `--json`. `vitrine start`, `status`, `stop` and `restart --json` print one JSON object on one line, lifecycle contract 1 (`vitrine doctor --json` reports the contract version):
+
+| Field | Meaning |
+|---|---|
+| `status` | `running`, `stopped` or `failed` |
+| `url`, `api_url`, `pid`, `port`, `session_id` | the running server, `null` without one |
+| `owner_pids` | the processes the server stops with (see below); `[]` for a server without owners, `null` without a server |
+| `data_dir` | the study store |
+| `version` | the running server's Vitrine version, else the installed one |
+| `error` | what went wrong when `status` is `failed` |
+
+The exit code is 0, 1 for `failed`, and 3 for `status --json` when no server runs. New fields can appear within a contract version; ignore the ones you do not know. `VITRINE_OPEN_BROWSER=0` keeps every server started in that environment from opening the system browser.
+
+**Owner processes.** A server runs detached and outlives the process that started it until `vitrine stop`, and the ten ports from 7741 to 7750 limit how many can run. A host that may not get to run `vitrine stop` when it exits (it is killed, it crashes, or, on Windows, it is ended with `TerminateProcess`) names itself the owner:
+
+- `vitrine start --owner-pid <pid>`, or `VITRINE_OWNER_PID=<pid>` in the environment. The variable also reaches servers that `show()` starts by itself in that environment, and Vitrine versions that predate owners ignore it.
+- Every two seconds the server checks its owners. Once the last one has exited it stops the way `vitrine stop` stops it: the studies stay on disk and `.server.json` goes.
+- `start` with an owner that finds a server running adds the owner to it, also to a server that was started without one, which from then on stops with its owners. A server stops when its last owner exits, so one host exiting does not take the board from another; `vitrine stop` stops it whatever its owners.
+- `owner_pids` lists the owners. A server from a Vitrine version that predates owners keeps running without taking one, so check that your PID is there, and stop that server yourself or restart it.
+- `start` fails when the owner is not running, rather than starting a server nothing would stop; `show()` then falls back to a server inside its own process. When it finds a server that is already stopping because its owners exited, it waits for it to exit and starts a new one.
+- `restart` gives the new server the old one's owners that are still running, and the one it is given.
+- An owner that has exited counts as gone even while it lingers: as a zombie its parent has not reaped yet on Linux and macOS, or held open by another process's handle on Windows.
+- A PID can be reused once its process has exited. The server records each owner's start time on Linux, macOS and Windows and does not mistake a later process with the same PID for the owner. Elsewhere it compares PIDs only, and a PID reused within the two seconds between checks keeps the server running until that process exits.
 
 ## Python API
 

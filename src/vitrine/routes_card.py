@@ -350,6 +350,38 @@ async def api_shutdown(server: DisplayServer, request: Request) -> JSONResponse:
     return JSONResponse({"status": "shutting_down"})
 
 
+async def api_owner(server: DisplayServer, request: Request) -> JSONResponse:
+    """Add a process the server stops with once it has exited. Requires auth.
+
+    Answers 409 when that process is not running and 503 when the server is
+    already stopping because its owners exited.
+    """
+    from vitrine._utils import MAX_PID, OwnerRejected
+
+    if not server._check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    pid = body.get("pid") if isinstance(body, dict) else None
+    if type(pid) is not int or not 0 < pid <= MAX_PID:
+        return JSONResponse(
+            {"error": "pid must be a positive integer"}, status_code=400
+        )
+
+    try:
+        owner_pids = server.add_owner(pid)
+    except OwnerRejected as exc:
+        status_code = 503 if exc.reason == "stopping" else 409
+        return JSONResponse(
+            {"error": exc.reason, "message": str(exc)}, status_code=status_code
+        )
+    return JSONResponse({"owner_pids": owner_pids})
+
+
 async def api_response(server: DisplayServer, request: Request) -> JSONResponse:
     """Long-poll endpoint for blocking show() responses."""
     if not server._check_auth(request):

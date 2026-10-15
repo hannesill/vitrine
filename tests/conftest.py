@@ -6,6 +6,13 @@ from vitrine.dispatch import configure
 
 
 @pytest.fixture(autouse=True)
+def _no_inherited_owner(monkeypatch):
+    """Keep an owner set by the shell running the tests (a host app's agent
+    sets one) out of every CLI call and server the tests start."""
+    monkeypatch.delenv("VITRINE_OWNER_PID", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _configure_dispatch(tmp_path):
     """Set up dispatch with test skill directories and task config.
 
