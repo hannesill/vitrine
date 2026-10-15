@@ -54,7 +54,6 @@ from vitrine._utils import (
     SUPPORTED_DISPLAY_HOSTS,
     OwnerRejected,
     browser_opening_enabled,
-    is_pid_alive,
     is_same_process_alive,
     keep_out_of_git,
     package_version,
@@ -551,7 +550,9 @@ class DisplayServer:
                 raise OwnerRejected(
                     "stopping", "The server is stopping because its owners exited."
                 )
-            if not is_pid_alive(pid):
+            # Checked as owners_gone checks it, so a zombie, or a process that
+            # exited after its start time was read, is not taken.
+            if not is_same_process_alive(pid, start_time):
                 raise OwnerRejected(
                     "not_running", f"Owner process {pid} is not running."
                 )
