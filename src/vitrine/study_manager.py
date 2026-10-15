@@ -129,8 +129,10 @@ class StudyManager:
         self._label_to_dir: dict[str, str] = {}  # user_label -> dir_name
         self._card_index: dict[str, str] = {}  # card_id -> dir_name
         self._all_cards_cache: list[CardDescriptor] | None = None
-        # Label for cards published without a study, set on first use
+        # Label for cards published without a study, set on first use, and the
+        # start time that finds that study again after another process renames it
         self._default_label: str | None = None
+        self._default_start_time: str | None = None
 
         # Discover existing studies from disk
         self._discover_studies()
@@ -158,6 +160,8 @@ class StudyManager:
                 self._default_label = datetime.now(timezone.utc).strftime(
                     "auto-%Y%m%d-%H%M%S"
                 )
+            else:
+                self._follow_default_study(self._default_label)
             study = self._default_label
 
         # Return existing study if label matches
@@ -180,6 +184,8 @@ class StudyManager:
             "start_time": datetime.now(timezone.utc).isoformat(),
         }
         _atomic_write_json(study_dir / "meta.json", meta)
+        if study == self._default_label:
+            self._default_start_time = meta["start_time"]
 
         # Create ArtifactStore
         store = ArtifactStore(session_dir=study_dir, session_id=dir_name)
@@ -230,16 +236,7 @@ class StudyManager:
         if study_dir.exists():
             shutil.rmtree(study_dir)
 
-        # Clean up in-memory state
-        self._stores.pop(dir_name, None)
-        self._label_to_dir.pop(study, None)
-
-        # Remove card index entries for this study
-        to_remove = [cid for cid, dn in self._card_index.items() if dn == dir_name]
-        for cid in to_remove:
-            del self._card_index[cid]
-
-        self._all_cards_cache = None
+        self._forget(study, dir_name)
         logger.debug(f"Deleted study '{study}' ({dir_name})")
         return True
 
@@ -281,22 +278,7 @@ class StudyManager:
         if old_dir.exists() and not new_dir.exists():
             old_dir.rename(new_dir)
 
-        # Point the ArtifactStore at the new directory
-        if store:
-            store.relocate(new_dir, new_dir_name)
-
-        # Update in-memory mappings
-        del self._label_to_dir[old_label]
-        self._label_to_dir[new_label] = new_dir_name
-        if self._default_label == old_label:
-            self._default_label = new_label
-
-        if old_dir_name in self._stores:
-            self._stores[new_dir_name] = self._stores.pop(old_dir_name)
-
-        for card_id, dn in self._card_index.items():
-            if dn == old_dir_name:
-                self._card_index[card_id] = new_dir_name
+        self._moved(old_label, old_dir_name, new_label, new_dir_name)
 
         # Update meta.json on disk
         meta_path = new_dir / "meta.json"
@@ -314,6 +296,56 @@ class StudyManager:
             f"({old_dir_name} -> {new_dir_name})"
         )
         return True
+
+    def _follow_default_study(self, label: str) -> None:
+        """Catch up with another process renaming or deleting the default study.
+
+        The server keeps its own manager, so a study renamed in the browser
+        moves on disk under this one. A rename keeps the study's start time,
+        which finds it again; a deleted study is started anew.
+        """
+        dir_name = self._label_to_dir.get(label)
+        if dir_name is None or (self._studies_dir / dir_name).is_dir():
+            return
+        if self._default_start_time is not None:
+            for study_dir in self._studies_dir.iterdir():
+                try:
+                    meta = json.loads((study_dir / "meta.json").read_text())
+                except (json.JSONDecodeError, OSError):
+                    continue
+                if meta.get("start_time") == self._default_start_time:
+                    new_label = meta.get("label", study_dir.name)
+                    self._moved(label, dir_name, new_label, study_dir.name)
+                    return
+        self._forget(label, dir_name)
+
+    def _moved(
+        self, old_label: str, old_dir_name: str, new_label: str, new_dir_name: str
+    ) -> None:
+        """Point in-memory state at a study's new label and directory."""
+        store = self._stores.pop(old_dir_name, None)
+        if store is not None:
+            store.relocate(self._studies_dir / new_dir_name, new_dir_name)
+            self._stores[new_dir_name] = store
+
+        self._label_to_dir.pop(old_label, None)
+        self._label_to_dir[new_label] = new_dir_name
+        if self._default_label == old_label:
+            self._default_label = new_label
+
+        for card_id, dn in self._card_index.items():
+            if dn == old_dir_name:
+                self._card_index[card_id] = new_dir_name
+        self._all_cards_cache = None
+
+    def _forget(self, label: str, dir_name: str) -> None:
+        """Drop a study that is gone from disk from in-memory state."""
+        self._stores.pop(dir_name, None)
+        self._label_to_dir.pop(label, None)
+        to_remove = [cid for cid, dn in self._card_index.items() if dn == dir_name]
+        for cid in to_remove:
+            del self._card_index[cid]
+        self._all_cards_cache = None
 
     def clean_studies(self, older_than: str = "7d") -> int:
         """Remove studies older than a given age.
