@@ -109,6 +109,27 @@ class TestGetOrCreateStudy:
         assert label.startswith("auto-")
         assert store is not None
 
+    def test_auto_label_is_kept_for_later_cards(self, manager, monkeypatch):
+        """Cards published without a study stay in one study, however far apart."""
+        import itertools
+        from datetime import datetime, timedelta, timezone
+
+        import vitrine.study_manager as study_manager
+
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        seconds = itertools.count()
+
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return start + timedelta(seconds=next(seconds))
+
+        monkeypatch.setattr(study_manager, "datetime", Clock)
+        first, store1 = manager.get_or_create_study(None)
+        second, store2 = manager.get_or_create_study(None)
+        assert first == second == "auto-20260101-000000"
+        assert store1 is store2
+
     def test_different_labels_different_studies(self, manager):
         _, store1 = manager.get_or_create_study("study-a")
         _, store2 = manager.get_or_create_study("study-b")
