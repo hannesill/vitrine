@@ -129,6 +129,8 @@ class StudyManager:
         self._label_to_dir: dict[str, str] = {}  # user_label -> dir_name
         self._card_index: dict[str, str] = {}  # card_id -> dir_name
         self._all_cards_cache: list[CardDescriptor] | None = None
+        # Label for cards published without a study, set on first use
+        self._default_label: str | None = None
 
         # Discover existing studies from disk
         self._discover_studies()
@@ -140,9 +142,10 @@ class StudyManager:
     ) -> tuple[str, ArtifactStore]:
         """Get or create a study by label.
 
-        If study is None, generates an auto-label from the current timestamp.
-        If a study with the same label already exists (within StudyManager lifetime),
-        returns the existing study.
+        If study is None, uses this manager's default study, labelled with the
+        time of its first use, so every card a process publishes without a
+        label lands in one study. If a study with the same label already
+        exists (within StudyManager lifetime), returns the existing study.
 
         Args:
             study: User-provided study label, or None for auto.
@@ -151,7 +154,11 @@ class StudyManager:
             Tuple of (study_label, ArtifactStore).
         """
         if study is None:
-            study = datetime.now(timezone.utc).strftime("auto-%Y%m%d-%H%M%S")
+            if self._default_label is None:
+                self._default_label = datetime.now(timezone.utc).strftime(
+                    "auto-%Y%m%d-%H%M%S"
+                )
+            study = self._default_label
 
         # Return existing study if label matches
         if study in self._label_to_dir:
