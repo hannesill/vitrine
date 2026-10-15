@@ -67,7 +67,6 @@ class _Processes:
 
     def __init__(self, monkeypatch, **start_times):
         self.start_times = {int(pid[1:]): t for pid, t in start_times.items()}
-        monkeypatch.setattr(server_mod, "is_pid_alive", self.alive)
         monkeypatch.setattr(server_mod, "process_start_time", self.start_time)
         monkeypatch.setattr(server_mod, "is_same_process_alive", self.same)
 
@@ -335,6 +334,21 @@ class TestDisplayServerOwners:
             server.add_owner(10)
         assert rejected.value.reason == "not_running"
         assert server.owner_pids == []
+
+    @pytest.mark.skipif(not _START_TIME_PLATFORM, reason="Linux and macOS")
+    def test_an_owner_that_has_exited_but_is_not_reaped_is_rejected(self, server):
+        # Until its parent waits for it, its PID still answers signals.
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"])
+        child_start = process_start_time(child.pid)
+        child.kill()
+        try:
+            _wait_for(lambda: not is_same_process_alive(child.pid, child_start), 5)
+            with pytest.raises(OwnerRejected) as rejected:
+                server.add_owner(child.pid)
+            assert rejected.value.reason == "not_running"
+            assert server.owner_pids == []
+        finally:
+            child.wait()
 
     def test_stops_with_the_last_owner(self, server, monkeypatch, tmp_path):
         processes = _Processes(monkeypatch, p10=1000, p11=1100)
