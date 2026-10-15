@@ -27,11 +27,19 @@ function renderTable(container, cardData) {
   var rowInfoEl = document.createElement('span');
   var pagerEl = { current: null };
 
+  // "N rows"; for a table the row limit cut short, "N of M rows (row limit)".
+  function rowCount(total) {
+    if (preview.truncated_from && total === shape[0]) {
+      return total.toLocaleString() + ' of ' + preview.truncated_from.toLocaleString() + ' rows (row limit)';
+    }
+    return total.toLocaleString() + ' rows';
+  }
+
   function updateRowInfo() {
     var total = totalRowsRef.value;
     var start = total > 0 ? pagerState.offset + 1 : 0;
     var end = Math.min(pagerState.offset + pagerState.limit, total);
-    var text = shape[1] + ' columns \u00b7 ' + total.toLocaleString() + ' rows';
+    var text = shape[1] + ' columns \u00b7 ' + rowCount(total);
     if (searchState.text) text += ' (filtered)';
     if (total > 0 && (start > 1 || end < total)) text += ' (showing ' + start + '\u2013' + end + ')';
     rowInfoEl.textContent = text;
@@ -195,7 +203,7 @@ function renderTable(container, cardData) {
     info.appendChild(pager);
   } else {
     // Small table — preview is the full data
-    rowInfoEl.textContent = shape[1] + ' columns \u00b7 ' + totalRows.toLocaleString() + ' rows';
+    rowInfoEl.textContent = shape[1] + ' columns \u00b7 ' + rowCount(totalRows);
   }
 
   container.appendChild(wrapper);

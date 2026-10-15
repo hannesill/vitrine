@@ -126,7 +126,7 @@ def _render_dataframe(
 
     # Apply redaction (currently pass-through)
     redacted_df = redactor.redact_dataframe(df)
-    redacted_df, _was_truncated = redactor.enforce_row_limit(redacted_df)
+    redacted_df, was_truncated = redactor.enforce_row_limit(redacted_df)
 
     # Store full DataFrame as Parquet
     store.store_dataframe(card_id, redacted_df)
@@ -137,6 +137,16 @@ def _render_dataframe(
     columns = list(redacted_df.columns)
     dtypes = {col: str(redacted_df[col].dtype) for col in columns}
 
+    preview = {
+        "columns": columns,
+        "dtypes": dtypes,
+        "shape": list(redacted_df.shape),
+        "preview_rows": preview_rows,
+    }
+    if was_truncated:
+        # The row cap (VITRINE_MAX_ROWS) dropped the rest; the card says so.
+        preview["truncated_from"] = len(df)
+
     card = CardDescriptor(
         card_id=card_id,
         card_type=CardType.TABLE,
@@ -146,12 +156,7 @@ def _render_dataframe(
         study=study,
         artifact_id=card_id,
         artifact_type="parquet",
-        preview={
-            "columns": columns,
-            "dtypes": dtypes,
-            "shape": list(redacted_df.shape),
-            "preview_rows": preview_rows,
-        },
+        preview=preview,
         provenance=_build_provenance(source),
     )
     store.store_card(card)
