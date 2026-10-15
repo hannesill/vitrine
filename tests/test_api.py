@@ -1016,7 +1016,6 @@ class TestAutoStudy:
         display.show("card 1")
         display.show("card 2")
         studies = display.list_studies()
-        # Both cards go into the same auto-study (same timestamp within test)
         assert len(studies) == 1
         assert studies[0]["card_count"] == 2
 
@@ -1240,15 +1239,16 @@ class TestAskFreeText:
         result = display.ask("Which score?", ["SOFA", "APACHE III"])
         assert result == "Actually, use LODS instead"
 
-    def test_ask_returns_empty_string_message(self, store, mock_server):
-        """ask() returns empty string when message is empty (not None)."""
-        mock_server._mock_response = {
-            "action": "APACHE III",
-            "card_id": "test",
-            "message": "",
-        }
-        result = display.ask("Which score?", ["SOFA", "APACHE III"])
-        assert result == ""
+    def test_ask_returns_button_when_text_box_empty(self, store, mock_server):
+        """ask() returns the clicked option when the text box was left empty."""
+        for message in ["", "  \n"]:
+            mock_server._mock_response = {
+                "action": "APACHE III",
+                "card_id": "test",
+                "message": message,
+            }
+            result = display.ask("Which score?", ["SOFA", "APACHE III"])
+            assert result == "APACHE III"
 
     def test_ask_returns_button_on_none_message(self, store, mock_server):
         """ask() returns button label when message is None."""

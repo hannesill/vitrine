@@ -408,10 +408,12 @@ def ask(
         timeout: Seconds to wait (default 600).
 
     Returns:
-        The chosen action string, or ``"timeout"`` if no response.
+        What the researcher typed, if anything; otherwise the option they
+        clicked, ``"skip"``, or ``"timeout"`` if no response.
     """
     r = show(question, wait=True, actions=options, study=study, timeout=timeout)
-    return r.message if r.message is not None else r.action
+    typed = (r.message or "").strip()
+    return typed or r.action
 
 
 class ProgressContext:
