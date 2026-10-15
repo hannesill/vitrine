@@ -224,6 +224,18 @@ class TestReplace:
         assert [c.card_id for c in cards] == [card_id]
         assert cards[0].preview["text"] == "updated"
 
+    def test_replace_takes_type_artifact_and_source(self, store, mock_server):
+        card_id = display.show("original", source="draft.py")
+        df = pd.DataFrame({"x": range(30)})
+        assert display.show(df, replace=card_id, source="final.py") == card_id
+        [card] = store.list_cards()
+        assert card.card_type == CardType.TABLE
+        assert card.artifact_id == card_id
+        assert card.provenance.source == "final.py"
+        artifacts = sorted(p.name for p in store._artifacts_dir.iterdir())
+        assert artifacts == [f"{card_id}.parquet"]
+        assert len(store.read_table_page(card_id, offset=0, limit=50)["rows"]) == 30
+
     def test_replace_unknown_card_appends(self, store, mock_server):
         new_id = display.show("orphan", replace="nonexistent")
         assert new_id != "nonexistent"

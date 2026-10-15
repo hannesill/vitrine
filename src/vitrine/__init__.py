@@ -225,20 +225,29 @@ def show(
             study=study,
             store=replace_store,
         )
-        # Update the old card's entry in the store
+        # The original card takes everything render() produced, and keeps its
+        # id: its artifact moves under that id too, because the server finds
+        # an artifact's study through the card that owns it.
+        rendered = _serialize_card(card)
         updated = replace_store.update_card(
             replace,
             **{
-                "title": card.title,
-                "description": card.description,
-                "preview": card.preview,
-                "artifact_id": card.artifact_id,
-                "artifact_type": card.artifact_type,
+                key: rendered.get(key)
+                for key in (
+                    "card_type",
+                    "title",
+                    "description",
+                    "preview",
+                    "artifact_type",
+                    "provenance",
+                )
             },
+            artifact_id=replace if card.artifact_id is not None else None,
         )
         if updated is not None:
-            # The original card now shows the new content and artifact; drop
-            # the copy render() indexed, so the study lists the card once.
+            if card.artifact_id is not None:
+                replace_store.adopt_artifacts(card.card_id, replace)
+            # Drop the copy render() indexed, so the study lists the card once.
             replace_store.remove_from_index(card.card_id)
             if _st._study_manager is not None:
                 _st._study_manager.refresh()

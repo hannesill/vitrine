@@ -225,6 +225,13 @@ class ArtifactStore:
         """Write the card index to disk."""
         self._write_json(self._index_path, cards)
 
+    def adopt_artifacts(self, from_id: str, to_id: str) -> None:
+        """Give ``from_id``'s artifact files to ``to_id``, replacing ``to_id``'s own."""
+        for path in self._artifacts_dir.glob(f"{to_id}.*"):
+            path.unlink()
+        for path in self._artifacts_dir.glob(f"{from_id}.*"):
+            path.rename(self._artifacts_dir / f"{to_id}{path.suffix}")
+
     def remove_from_index(self, card_id: str) -> None:
         """Drop a card's entry from the index, keeping its artifacts."""
         with self._changing(self._index_path):
