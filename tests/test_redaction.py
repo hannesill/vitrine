@@ -111,6 +111,29 @@ class TestPatternMatching:
         assert r._matches_pattern("diagnosis") is False
         assert r._matches_pattern("subject_id") is False
 
+    def test_matches_identifier_parts(self):
+        r = Redactor()
+        for column in [
+            "patient_city",
+            "home_address",
+            "zipcode",
+            "Email",
+            "patient_mrn",
+            "birth_date",
+        ]:
+            assert r._matches_pattern(column) is True, column
+
+    def test_no_match_inside_clinical_words(self):
+        r = Redactor()
+        for column in [
+            "ethnicity",
+            "dobutamine_dose",
+            "specificity",
+            "toxicity",
+            "vital_capacity",
+        ]:
+            assert r._matches_pattern(column) is False, column
+
 
 class TestRedactDataFrame:
     """Test redact_dataframe() implementation."""
