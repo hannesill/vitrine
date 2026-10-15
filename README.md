@@ -214,7 +214,7 @@ The exit code is 0, 1 for `failed`, and 3 for `status --json` when no server run
 
 **Owner processes.** A server runs detached and outlives the process that started it until `vitrine stop`, and the ten ports from 7741 to 7750 limit how many can run. A host that may not get to run `vitrine stop` when it exits (it is killed, it crashes, or, on Windows, it is ended with `TerminateProcess`) names itself the owner:
 
-- `vitrine start --owner-pid <pid>`, or `VITRINE_OWNER_PID=<pid>` in the environment. The variable also reaches servers that `show()` starts by itself in that environment, and Vitrine versions that predate owners ignore it.
+- `vitrine start --owner-pid <pid>`, or `VITRINE_OWNER_PID=<pid>` in the environment. The variable also reaches `show()` in that environment: a server it starts by itself gets the owner, and so does a running server it finds, as with `start` below. Vitrine versions that predate owners ignore it.
 - Every two seconds the server checks its owners. Once the last one has exited it stops the way `vitrine stop` stops it: the studies stay on disk and `.server.json` goes.
 - `start` with an owner that finds a server running adds the owner to it, also to a server that was started without one, which from then on stops with its owners. A server stops when its last owner exits, so one host exiting does not take the board from another; `vitrine stop` stops it whatever its owners.
 - `owner_pids` lists the owners. A server from a Vitrine version that predates owners keeps running without taking one, so check that your PID is there, and stop that server yourself or restart it.

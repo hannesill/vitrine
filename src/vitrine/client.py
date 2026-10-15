@@ -404,15 +404,16 @@ def _ensure_started(
                 # Port scanning would risk connecting to a different project's
                 # server when multiple projects run vitrine concurrently.
                 info = _discover_server()
-                if info:
+                if info and _join_as_owner(info):
                     _st._remote_url = info.get("api_url", info["url"])
                     _st._auth_token = info.get("token")
                     _st._session_id = info["session_id"]
                     return
 
-                # No server found -> start a new persistent process after
-                # releasing the lock. The child will hold it until PID metadata
-                # is written, so concurrent clients will block and then discover.
+                # No server found, or one stopping because its owners exited
+                # -> start a new persistent process after releasing the lock.
+                # The child will hold it until PID metadata is written, so
+                # concurrent clients will block and then discover.
                 should_start_process = True
 
             finally:
@@ -431,6 +432,8 @@ def _ensure_started(
                 if spawned_process is not None:
                     terminate_spawned_process(spawned_process)
                 raise
+            if info and not _join_as_owner(info):
+                info = None  # Stopping because its owners exited; wait for the next.
             if info:
                 spawned_pid = getattr(spawned_process, "pid", None)
                 if (
@@ -680,6 +683,38 @@ def _add_server_owner(info: dict[str, Any], pid: int) -> list[int] | None:
     if not isinstance(owner_pids, list):
         return None
     return owner_pids
+
+
+def _join_as_owner(info: dict[str, Any]) -> bool:
+    """Give the server ``info`` describes the owner ``VITRINE_OWNER_PID`` names.
+
+    A server that ``show()`` starts reads that owner from the environment it
+    inherits, but one it finds running was started by someone else, maybe
+    another host, and would stop when that host exits. Returns ``False``
+    when the server is stopping because its owners exited, so the caller
+    needs a new one; any other refusal leaves the server to be used as it is.
+    """
+    from vitrine._utils import (
+        OWNER_PID_ENV,
+        OwnerRejected,
+        owner_pids,
+        parse_owner_pid,
+    )
+
+    try:
+        pid = parse_owner_pid(os.environ.get(OWNER_PID_ENV))
+    except ValueError as exc:
+        logger.warning(f"{OWNER_PID_ENV}: {exc}")
+        return True
+    if pid is None or pid in owner_pids(info):
+        return True
+    try:
+        _add_server_owner(info, pid)
+    except OwnerRejected as exc:
+        if exc.reason == "stopping":
+            return False
+        logger.debug(str(exc))
+    return True
 
 
 def server_status() -> dict[str, Any] | None:
