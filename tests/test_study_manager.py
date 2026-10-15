@@ -137,6 +137,33 @@ class TestGetOrCreateStudy:
         assert label == "renamed"
         assert [s["label"] for s in manager.list_studies()] == ["renamed"]
 
+    def test_auto_label_follows_a_rename_by_another_process(self, manager, display_dir):
+        """The server renames with its own manager, moving the study under this one."""
+        from vitrine.renderer import render
+
+        first, store = manager.get_or_create_study(None)
+        render("before", study=first, store=store)
+        assert StudyManager(display_dir).rename_study(first, "renamed")
+
+        label, store = manager.get_or_create_study(None)
+        render("after", study=label, store=store)
+        assert label == "renamed"
+        studies = StudyManager(display_dir).list_studies()
+        assert [(s["label"], s["card_count"]) for s in studies] == [("renamed", 2)]
+
+    def test_auto_study_deleted_by_another_process_starts_anew(
+        self, manager, display_dir
+    ):
+        from vitrine.renderer import render
+
+        first, _ = manager.get_or_create_study(None)
+        assert StudyManager(display_dir).delete_study(first)
+
+        label, store = manager.get_or_create_study(None)
+        render("after", study=label, store=store)
+        studies = StudyManager(display_dir).list_studies()
+        assert [(s["label"], s["card_count"]) for s in studies] == [(label, 1)]
+
     def test_different_labels_different_studies(self, manager):
         _, store1 = manager.get_or_create_study("study-a")
         _, store2 = manager.get_or_create_study("study-b")
