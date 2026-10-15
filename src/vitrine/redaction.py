@@ -27,8 +27,16 @@ def _identifier(words: str) -> str:
 
     Parts are separated by anything but a letter or digit, so ``patient_city``
     and ``Email`` match, while ``ethnicity`` and ``dobutamine_dose`` do not.
+    Patterns are also tried on the name split into words (see
+    ``_split_words``), which covers ``emailAddress`` and ``phone1``.
     """
     return rf"(?i)(?<![a-z0-9])(?:{words})(?![a-z0-9])"
+
+
+def _split_words(column_name: str) -> str:
+    """``dateOfBirth`` -> ``date_Of_Birth``, ``phone1`` -> ``phone_1``."""
+    name = re.sub(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", column_name)
+    return re.sub(r"(?<=[A-Za-z])(?=[0-9])|(?<=[0-9])(?=[A-Za-z])", "_", name)
 
 
 # Default patterns for columns likely to contain PHI
@@ -163,4 +171,5 @@ class Redactor:
         Returns:
             True if the column name matches a PHI pattern.
         """
-        return any(p.search(column_name) for p in self._patterns)
+        words = _split_words(column_name)
+        return any(p.search(column_name) or p.search(words) for p in self._patterns)

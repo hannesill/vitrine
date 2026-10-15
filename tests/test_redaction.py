@@ -120,6 +120,13 @@ class TestPatternMatching:
             "Email",
             "patient_mrn",
             "birth_date",
+            "emailAddress",
+            "streetAddress",
+            "phoneNumber",
+            "dateOfBirth",
+            "phone1",
+            "patientMRN",
+            "FirstName",
         ]:
             assert r._matches_pattern(column) is True, column
 
@@ -131,6 +138,9 @@ class TestPatternMatching:
             "specificity",
             "toxicity",
             "vital_capacity",
+            "ethnicityGroup",
+            "dobutamineDose",
+            "vitalCapacity",
         ]:
             assert r._matches_pattern(column) is False, column
 
