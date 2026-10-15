@@ -225,6 +225,14 @@ class ArtifactStore:
         """Write the card index to disk."""
         self._write_json(self._index_path, cards)
 
+    def remove_from_index(self, card_id: str) -> None:
+        """Drop a card's entry from the index, keeping its artifacts."""
+        with self._changing(self._index_path):
+            cards = self._read_index()
+            kept = [c for c in cards if c.get("card_id") != card_id]
+            if len(kept) != len(cards):
+                self._write_index(kept)
+
     def _append_to_index(self, card_dict: dict[str, Any]) -> None:
         """Append a card to the index."""
         with self._changing(self._index_path):

@@ -216,11 +216,18 @@ class TestSection:
 
 
 class TestReplace:
-    def test_replace_creates_new_card(self, store, mock_server):
+    def test_replace_updates_the_card_in_place(self, store, mock_server):
         card_id = display.show("original")
         new_id = display.show("updated", replace=card_id)
-        # replace creates a new card and updates the old one
-        assert new_id != card_id
+        assert new_id == card_id
+        cards = store.list_cards()
+        assert [c.card_id for c in cards] == [card_id]
+        assert cards[0].preview["text"] == "updated"
+
+    def test_replace_unknown_card_appends(self, store, mock_server):
+        new_id = display.show("orphan", replace="nonexistent")
+        assert new_id != "nonexistent"
+        assert [c.card_id for c in store.list_cards()] == [new_id]
 
     def test_replace_pushes_to_server(self, store, mock_server):
         card_id = display.show("original")
