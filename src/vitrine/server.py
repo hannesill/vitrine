@@ -68,6 +68,12 @@ logger = logging.getLogger(__name__)
 _STATIC_DIR = Path(__file__).parent / "static"
 _DEFAULT_PORT = 7741
 _MAX_PORT = 7750
+# uvicorn binds through asyncio's create_server, which sets SO_REUSEADDR on
+# POSIX (except Cygwin) so a port held only by TIME_WAIT connections can be
+# reused at once. On Windows the option lets a socket bind over a live
+# listener, so neither asyncio nor the port probe sets it there.
+_REUSE_ADDRESS = os.name == "posix" and sys.platform != "cygwin"
+_PORT_PROBE_TIMEOUT_SECONDS = 0.2
 _DISPLAY_HOST = "vitrine.localhost"
 _SERVER_THREAD_JOIN_TIMEOUT_SECONDS = 3.0
 
@@ -511,13 +517,37 @@ class DisplayServer:
     def _find_port(self) -> int:
         """Find an available port, starting from self.port."""
         for port in range(self.port, _MAX_PORT + 1):
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.bind((self.host, port))
-                    return port
-            except OSError:
-                continue
+            if self._port_is_free(port):
+                return port
         raise RuntimeError(f"No available port in range {self.port}-{_MAX_PORT}")
+
+    def _port_is_free(self, port: int) -> bool:
+        """Tell whether uvicorn could bind ``port``, probing as it will bind."""
+        # On macOS, SO_REUSEADDR lets a bind to 127.0.0.1 succeed beside a live
+        # listener on the wildcard address, so look for a listener first.
+        if _REUSE_ADDRESS and self._port_has_listener(port):
+            return False
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                if _REUSE_ADDRESS:
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind((self.host, port))
+        except OSError:
+            return False
+        return True
+
+    def _port_has_listener(self, port: int) -> bool:
+        """Tell whether something accepts connections on ``port``."""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(_PORT_PROBE_TIMEOUT_SECONDS)
+                s.connect((self.host, port))
+        except ConnectionRefusedError:
+            return False
+        except OSError:
+            # Anything but a refusal leaves the port in doubt; skip it.
+            return True
+        return True
 
     def start(
         self,
