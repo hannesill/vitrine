@@ -28,6 +28,9 @@ function _applyTheme(dark) {
   }
   themeToggleEl.innerHTML = dark ? _sunIcon : _moonIcon;
   _swapHljsTheme(dark);
+  // Whatever bakes the theme's colours in (Plotly charts) listens for this,
+  // whether the reader clicked the toggle or the system changed its scheme.
+  document.dispatchEvent(new CustomEvent('vitrine:themechange', { detail: { dark: dark } }));
 }
 
 function initTheme() {
