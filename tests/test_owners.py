@@ -132,21 +132,22 @@ def _seconds_since_start(start_time: int) -> float:
 
 
 class _FakeKernel32:
-    """kernel32 for one process: open fails with ``open_error``, else it has
-    ``exit_code``, and was created at FILETIME (1, 2)."""
+    """kernel32 for one process: open fails with ``open_error``, else its
+    handle is signalled once it has ``exited``, and it was created at
+    FILETIME (1, 2)."""
 
-    def __init__(self, open_error=None, exit_code=259):
+    def __init__(self, open_error=None, exited=False):
         self.open_error = open_error
-        self.exit_code = exit_code
+        self.exited = exited
         self.calls = []
 
     def OpenProcess(self, access, inherit, pid):
         self.calls.append(("open", access, pid))
         return None if self.open_error else 7
 
-    def GetExitCodeProcess(self, handle, code):
-        code._obj.value = self.exit_code
-        return 1
+    def WaitForSingleObject(self, handle, milliseconds):
+        self.calls.append(("wait", handle, milliseconds))
+        return 0 if self.exited else 0x102  # WAIT_OBJECT_0, WAIT_TIMEOUT
 
     def GetProcessTimes(self, handle, created, exited, kernel, user):
         created._obj.dwHighDateTime = 1
@@ -248,13 +249,19 @@ class TestProcessStartTime:
         assert process_start_time(4242) is None
 
     def test_windows_a_running_process_is_alive(self, windows):
-        kernel32 = windows(_FakeKernel32(exit_code=259))
+        kernel32 = windows(_FakeKernel32())
         assert utils.is_pid_alive(4242) is True
-        assert kernel32.calls == [("open", 0x1000, 4242), ("close", 7)]
+        # SYNCHRONIZE, and a wait that does not block.
+        assert kernel32.calls == [
+            ("open", 0x00100000, 4242),
+            ("wait", 7, 0),
+            ("close", 7),
+        ]
 
     def test_windows_an_exited_process_still_held_open_is_not_alive(self, windows):
-        # Its parent's handle keeps it openable after it has exited.
-        kernel32 = windows(_FakeKernel32(exit_code=1))
+        # Its parent's handle keeps it openable after it has exited, and its
+        # exit code may be 259, which also means STILL_ACTIVE.
+        kernel32 = windows(_FakeKernel32(exited=True))
         assert utils.is_pid_alive(4242) is False
         assert ("close", 7) in kernel32.calls
 
