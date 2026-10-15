@@ -15,6 +15,7 @@ Endpoints:
     GET  /api/health                     → health check (returns session_id)
     POST /api/command                    → unified command endpoint (auth required)
     POST /api/shutdown                   → graceful shutdown (auth required)
+    POST /api/owner                      → add an owner process (auth required)
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -47,11 +48,18 @@ from starlette.websockets import WebSocket
 from vitrine import routes_agent, routes_card, routes_study, ws_handlers
 from vitrine._types import CardDescriptor
 from vitrine._utils import (
+    OWNER_CHECK_INTERVAL_SECONDS,
+    OWNER_PID_ENV,
     SERVER_BIND_HOST,
     SUPPORTED_DISPLAY_HOSTS,
+    OwnerRejected,
     browser_opening_enabled,
+    is_pid_alive,
+    is_same_process_alive,
     keep_out_of_git,
     package_version,
+    parse_owner_pid,
+    process_start_time,
 )
 from vitrine.artifacts import ArtifactStore, _serialize_card
 from vitrine.dispatch import (
@@ -150,6 +158,11 @@ class DisplayServer:
             else _get_vitrine_dir().resolve()
         )
         self._pid_path: Path | None = None
+        self._pid_started_at: str | None = None
+        # Processes this server stops with: {"pid", "start_time"} each.
+        self._owners: list[dict[str, Any]] = []
+        self._owners_lock = threading.RLock()
+        self._owners_gone = False
         self._connections: list[WebSocket] = []
         self._lock = threading.Lock()
         self._lifecycle_lock = threading.RLock()
@@ -243,6 +256,7 @@ class DisplayServer:
             Route("/api/session", _r(routes_card.api_session)),
             Route("/api/command", _r(routes_card.api_command), methods=["POST"]),
             Route("/api/shutdown", _r(routes_card.api_shutdown), methods=["POST"]),
+            Route("/api/owner", _r(routes_card.api_owner), methods=["POST"]),
             Route(
                 "/api/response/{card_id}", _r(routes_card.api_response), methods=["GET"]
             ),
@@ -506,6 +520,68 @@ class DisplayServer:
         with self._lock:
             self._event_callbacks.append(callback)
 
+    # --- Owners ---
+
+    @property
+    def owner_pids(self) -> list[int]:
+        """The PIDs of the processes this server stops with."""
+        with self._owners_lock:
+            return [owner["pid"] for owner in self._owners]
+
+    def add_owner(self, pid: int) -> list[int]:
+        """Make process ``pid`` an owner of this server.
+
+        A server with owners stops once the last of them has exited (see
+        ``owners_gone``). Owners that have exited already are dropped, and a
+        PID given again replaces its entry, since it may name a new process.
+        Returns the owners' PIDs.
+
+        Raises ``OwnerRejected`` when ``pid`` is not running, or when the
+        server is stopping because its owners have exited.
+        """
+        start_time = process_start_time(pid)
+        with self._owners_lock:
+            if self._owners_gone:
+                raise OwnerRejected(
+                    "stopping", "The server is stopping because its owners exited."
+                )
+            if not is_pid_alive(pid):
+                raise OwnerRejected(
+                    "not_running", f"Owner process {pid} is not running."
+                )
+            self._owners = [
+                owner
+                for owner in self._owners
+                if owner["pid"] != pid
+                and is_same_process_alive(owner["pid"], owner["start_time"])
+            ]
+            self._owners.append({"pid": pid, "start_time": start_time})
+            self._update_pid_file()
+            return self.owner_pids
+
+    def owners_gone(self) -> bool:
+        """Whether this server had owners and every one of them has exited.
+
+        Owners that have exited are dropped from the PID file on the way. Once
+        this says so it stays so, and ``add_owner`` refuses: the server is
+        about to stop, and a host that took it over now would be left with a
+        board that disappears. A server that never had an owner is never gone.
+        """
+        with self._owners_lock:
+            if self._owners_gone or not self._owners:
+                return self._owners_gone
+            alive = [
+                owner
+                for owner in self._owners
+                if is_same_process_alive(owner["pid"], owner["start_time"])
+            ]
+            if not alive:
+                self._owners_gone = True
+            elif len(alive) < len(self._owners):
+                self._owners = alive
+                self._update_pid_file()
+            return self._owners_gone
+
     # --- Lifecycle ---
 
     def _find_port(self) -> int:
@@ -672,6 +748,27 @@ class DisplayServer:
         pid_path.parent.mkdir(parents=True, exist_ok=True)
         keep_out_of_git(pid_path.parent)
         self.data_dir = pid_path.parent.resolve()
+        self._pid_started_at = datetime.now(timezone.utc).isoformat()
+        self._dump_pid_file(pid_path)
+
+    def _update_pid_file(self) -> None:
+        """Rewrite the PID file after the owners changed, if it is still ours."""
+        pid_path = self._pid_path
+        if pid_path is None:
+            return
+        try:
+            from vitrine._utils import load_server_metadata
+
+            if load_server_metadata(pid_path).get("pid") != os.getpid():
+                return
+            self._dump_pid_file(pid_path)
+        except (OSError, RuntimeError) as exc:
+            # The owners still count; status and restart just do not see them.
+            logger.warning("Could not record the owners in the PID file: %s", exc)
+
+    def _dump_pid_file(self, pid_path: Path) -> None:
+        with self._owners_lock:
+            owners = [dict(owner) for owner in self._owners]
         info = {
             "pid": os.getpid(),
             "port": self.port,
@@ -682,7 +779,8 @@ class DisplayServer:
             "token": self.token,
             "data_dir": str(self.data_dir),
             "version": self.version,
-            "started_at": datetime.now(timezone.utc).isoformat(),
+            "started_at": self._pid_started_at,
+            "owners": owners,
         }
         temp_path = pid_path.with_name(f".{pid_path.name}.{uuid.uuid4().hex}.tmp")
         try:
@@ -780,11 +878,18 @@ class DisplayServer:
             logger.debug("Could not broadcast message")
 
 
-def _run_standalone(port: int = _DEFAULT_PORT, no_open: bool = False) -> None:
+def _run_standalone(
+    port: int = _DEFAULT_PORT,
+    no_open: bool = False,
+    owner_pids: Sequence[int] = (),
+) -> None:
     """Run the display server as a standalone persistent process.
 
     Acquires a file lock to prevent duplicate servers, checks the
     PID file for an existing healthy server, then starts.
+
+    With ``owner_pids`` the server stops by itself once the last of those
+    processes has exited. It does not start when none of them is running.
     """
     import atexit
     import sys
@@ -840,6 +945,16 @@ def _run_standalone(port: int = _DEFAULT_PORT, no_open: bool = False) -> None:
             token=token,
             session_id=session_id,
         )
+        for owner_pid in owner_pids:
+            try:
+                server.add_owner(owner_pid)
+            except OwnerRejected as exc:
+                logger.debug(str(exc))
+        if owner_pids and not server.owner_pids:
+            # Started now, it would wait for an owner that has already gone.
+            pids = ", ".join(str(pid) for pid in owner_pids)
+            print(f"vitrine: owner process not running ({pids})", file=sys.stderr)
+            sys.exit(1)
 
         stop_event = threading.Event()
 
@@ -864,20 +979,61 @@ def _run_standalone(port: int = _DEFAULT_PORT, no_open: bool = False) -> None:
         unlock_file(lock_fd)
         lock_fd.close()
 
-    # Persist after the launching process exits. Stop only on an explicit
-    # signal or after the HTTP shutdown endpoint has ended the server thread.
+    # Persist after the launching process exits. Stop on an explicit signal,
+    # after the HTTP shutdown endpoint has ended the server thread, or once
+    # the last owner has exited. Stopping for the owners takes the same path
+    # as the other two: studies stay on disk, only the PID file goes.
+    next_owner_check = time.monotonic() + OWNER_CHECK_INTERVAL_SECONDS
     while server.is_running and not stop_event.wait(0.2):
-        pass
+        if time.monotonic() < next_owner_check:
+            continue
+        next_owner_check = time.monotonic() + OWNER_CHECK_INTERVAL_SECONDS
+        if server.owners_gone():
+            logger.debug("Every owner process has exited, shutting down...")
+            # Give up the PID file before the listener closes: a host that
+            # starts a board meanwhile then gets a new server, not one that
+            # is going away and no longer answers.
+            server._remove_pid_file()
+            break
     server.stop()
 
 
-if __name__ == "__main__":
+def _parse_args(argv: Sequence[str] | None = None) -> Any:
     import argparse
+
+    def owner_pid(value: str) -> int:
+        try:
+            pid = parse_owner_pid(value)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(str(exc)) from exc
+        if pid is None:
+            raise argparse.ArgumentTypeError("An owner PID cannot be empty.")
+        return pid
 
     parser = argparse.ArgumentParser(description="vitrine server")
     parser.add_argument(
         "--port", type=int, default=_DEFAULT_PORT, help="Port to bind to"
     )
     parser.add_argument("--no-open", action="store_true", help="Don't open browser")
-    args = parser.parse_args()
-    _run_standalone(port=args.port, no_open=args.no_open)
+    parser.add_argument(
+        "--owner-pid",
+        type=owner_pid,
+        action="append",
+        help=(
+            "Stop once this process has exited; repeat for several owners "
+            f"(default: ${OWNER_PID_ENV})"
+        ),
+    )
+    args = parser.parse_args(argv)
+    if args.owner_pid is None:
+        try:
+            pid = parse_owner_pid(os.getenv(OWNER_PID_ENV))
+        except ValueError as exc:
+            parser.error(f"{OWNER_PID_ENV}: {exc}")
+        args.owner_pid = [] if pid is None else [pid]
+    return args
+
+
+if __name__ == "__main__":
+    args = _parse_args()
+    _run_standalone(port=args.port, no_open=args.no_open, owner_pids=args.owner_pid)
