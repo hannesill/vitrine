@@ -267,6 +267,21 @@ def _wait_for_stopping_server(info: dict[str, Any], json_output: bool) -> None:
     )
 
 
+def _wait_for_started_server(json_output: bool) -> dict[str, Any]:
+    """Wait for the server that another start is bringing up, and return it."""
+    deadline = time.monotonic() + STARTUP_READY_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        info = _server_status(json_output)
+        if info:
+            return info
+        time.sleep(STARTUP_POLL_INTERVAL_SECONDS)
+    _fail(
+        "Another vitrine server was starting but did not become healthy within "
+        f"{STARTUP_READY_TIMEOUT_SECONDS:g}s.",
+        json_output,
+    )
+
+
 def _report_owners(info: dict[str, Any]) -> None:
     from vitrine._utils import owner_pids
 
@@ -274,6 +289,17 @@ def _report_owners(info: dict[str, Any]) -> None:
     if pids:
         listed = ", ".join(str(pid) for pid in pids)
         _info(f"Stops once its owners have exited: {listed}")
+
+
+def _report_already_running(info: dict[str, Any], json_output: bool) -> None:
+    if json_output:
+        _emit_json(_lifecycle_payload("running", info))
+    else:
+        _info(
+            f"Server already running (pid={info.get('pid')}, "
+            f"port={info.get('port')}, url={info.get('url')})"
+        )
+        _report_owners(info)
 
 
 @app.command()
@@ -381,14 +407,7 @@ def start(
         # None: it was stopping because its own owners had exited, and has.
         info = _add_owners(info, owners, json_output)
     if info:
-        if json_output:
-            _emit_json(_lifecycle_payload("running", info))
-        else:
-            _info(
-                f"Server already running (pid={info.get('pid')}, "
-                f"port={info.get('port')}, url={info.get('url')})"
-            )
-            _report_owners(info)
+        _report_already_running(info, json_output)
         return
 
     if foreground:
@@ -399,7 +418,13 @@ def start(
         from vitrine.server import _run_standalone
 
         _info(f"Starting vitrine server on port {port}...")
-        _run_standalone(port=port, no_open=no_open, owner_pids=owners)
+        if _run_standalone(port=port, no_open=no_open, owner_pids=owners):
+            return
+        # Another start got there first, and its server lacks our owners.
+        info = _wait_for_started_server(json_output)
+        _report_already_running(
+            _add_missing_owners(info, owners, json_output), json_output
+        )
     else:
         try:
             started = _start_background(

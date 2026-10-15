@@ -913,14 +913,17 @@ def _run_standalone(
     port: int = _DEFAULT_PORT,
     no_open: bool = False,
     owner_pids: Sequence[int] = (),
-) -> None:
+) -> bool:
     """Run the display server as a standalone persistent process.
 
     Acquires a file lock to prevent duplicate servers, checks the
-    PID file for an existing healthy server, then starts.
+    PID file for an existing healthy server, then starts. Returns ``False``
+    at once when another server for this project is running or starting,
+    and ``True`` once the server it started has stopped.
 
     With ``owner_pids`` the server stops by itself once the last of those
     processes has exited. It does not start when none of them is running.
+    A server that is running or starting already does not get them.
     """
     import atexit
     import sys
@@ -941,7 +944,7 @@ def _run_standalone(
         # Another process holds the lock — a server is starting
         logger.debug("Another server process holds the lock, exiting")
         lock_fd.close()
-        sys.exit(0)
+        return False
 
     try:
         # Check PID file for an existing healthy server
@@ -957,7 +960,7 @@ def _run_standalone(
                 data_dir=info["data_dir"],
             ):
                 logger.debug(f"Healthy server already running (pid={pid}), exiting")
-                sys.exit(0)
+                return False
             else:
                 raise RuntimeError(
                     "Server PID is alive but its health identity does not match; "
@@ -1027,6 +1030,7 @@ def _run_standalone(
             server._remove_pid_file()
             break
     server.stop()
+    return True
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> Any:

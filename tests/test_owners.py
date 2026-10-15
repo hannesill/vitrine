@@ -589,6 +589,25 @@ class TestServerCommandLine:
         assert started == []
         assert not (data_dir / ".server.json").exists()
 
+    def test_says_so_when_another_server_is_starting(self, monkeypatch, tmp_path):
+        # The caller then has to give the owners to that server itself.
+        data_dir = tmp_path / ".vitrine"
+        data_dir.mkdir()
+        monkeypatch.setenv("VITRINE_DATA_DIR", str(data_dir))
+        _Processes(monkeypatch, p10=1000)
+        started = []
+        monkeypatch.setattr(
+            DisplayServer, "start", lambda self, **kwargs: started.append(kwargs)
+        )
+
+        with open(data_dir / ".server.lock", "w") as starting:
+            utils.lock_file(starting, exclusive=True, blocking=False)
+            try:
+                assert not server_mod._run_standalone(no_open=True, owner_pids=[10])
+            finally:
+                utils.unlock_file(starting)
+        assert started == []
+
 
 # ---------------------------------------------------------------------------
 # A real server process
