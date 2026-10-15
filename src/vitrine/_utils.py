@@ -205,8 +205,9 @@ def parse_owner_pid(value: str | None) -> int | None:
 # ---------------------------------------------------------------------------
 
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_SYNCHRONIZE = 0x00100000
 _ERROR_ACCESS_DENIED = 5
-_STILL_ACTIVE = 259
+_WAIT_OBJECT_0 = 0
 
 
 def is_pid_alive(pid: int) -> bool:
@@ -229,10 +230,9 @@ def is_pid_alive(pid: int) -> bool:
 
 def _windows_pid_alive(pid: int) -> bool:
     import ctypes
-    from ctypes import wintypes
 
     kernel32 = _windows_kernel32()
-    handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    handle = kernel32.OpenProcess(_SYNCHRONIZE, False, pid)
     if not handle:
         # As with EPERM elsewhere: the process exists but may not be opened
         # from here. A PID that is not in use fails with another error.
@@ -240,11 +240,9 @@ def _windows_pid_alive(pid: int) -> bool:
     try:
         # A process that has exited can still be opened while anyone holds a
         # handle to it, such as the parent that started it, so ask whether it
-        # still runs. (One that exited with code 259 reads as running.)
-        exit_code = wintypes.DWORD()
-        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-            return True
-        return exit_code.value == _STILL_ACTIVE
+        # still runs: its handle is signalled once it has exited. Its exit
+        # code cannot tell, since a process may exit with STILL_ACTIVE (259).
+        return kernel32.WaitForSingleObject(handle, 0) != _WAIT_OBJECT_0
     finally:
         kernel32.CloseHandle(handle)
 
@@ -353,11 +351,8 @@ def _windows_kernel32() -> Any:
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
     kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
     kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.GetExitCodeProcess.argtypes = (
-        wintypes.HANDLE,
-        ctypes.POINTER(wintypes.DWORD),
-    )
-    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
     kernel32.GetProcessTimes.argtypes = (
         wintypes.HANDLE,
         *(ctypes.POINTER(wintypes.FILETIME),) * 4,
