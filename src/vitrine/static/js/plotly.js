@@ -171,11 +171,12 @@ window.addEventListener('resize', function() {
   }, 150);
 });
 
-// Re-color Plotly charts on theme change (additive listener)
-themeToggleEl.addEventListener('click', function() {
+// Re-color Plotly charts on every theme change: the toggle, and a change of
+// the system's colour scheme while the reader has not picked a side.
+document.addEventListener('vitrine:themechange', function() {
   if (!window.Plotly) return;
   var textColor = getComputedStyle(document.documentElement).getPropertyValue('--text').trim();
-  var plots = document.querySelectorAll('.plotly-container .js-plotly-plot');
+  var plots = document.querySelectorAll('.plotly-container.js-plotly-plot');
   plots.forEach(function(plot) {
     window.Plotly.relayout(plot, {
       'paper_bgcolor': 'transparent',
