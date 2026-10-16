@@ -262,11 +262,7 @@ class StudyManager:
 
         old_dir_name = self._label_to_dir[old_label]
         old_dir = self._studies_dir / old_dir_name
-
-        # Build new dir name: keep timestamp prefix, replace label suffix
-        # Format: YYYY-MM-DD_HHMMSS_sanitized-label
-        parts = old_dir_name.split("_", 2)  # [date, time, old_label]
-        new_dir_name = f"{parts[0]}_{parts[1]}_{_sanitize_label(new_label)}"
+        new_dir_name = self._renamed_dir_name(old_dir_name, new_label)
         new_dir = self._studies_dir / new_dir_name
 
         # Update study label on all cards (while still at old path)
@@ -275,7 +271,7 @@ class StudyManager:
             store.rename_study(old_label, new_label)
 
         # Rename directory on disk
-        if old_dir.exists() and not new_dir.exists():
+        if new_dir_name != old_dir_name and old_dir.exists():
             old_dir.rename(new_dir)
 
         self._moved(old_label, old_dir_name, new_label, new_dir_name)
@@ -296,6 +292,27 @@ class StudyManager:
             f"({old_dir_name} -> {new_dir_name})"
         )
         return True
+
+    def _renamed_dir_name(self, old_dir_name: str, new_label: str) -> str:
+        """Pick the directory a study moves to when relabelled.
+
+        Keeps the timestamp prefix and replaces the label suffix. Never takes
+        another study's directory: a name already taken, e.g. by a study
+        created in the same second whose label sanitizes alike, gets a
+        numbered suffix. A study whose name comes up stays where it is.
+        """
+        # Format: YYYY-MM-DD_HHMMSS_sanitized-label
+        parts = old_dir_name.split("_", 2)  # [date, time, old_label]
+        base = f"{parts[0]}_{parts[1]}_{_sanitize_label(new_label)}"
+        taken = set(self._label_to_dir.values())
+        dir_name = base
+        n = 1
+        while dir_name != old_dir_name and (
+            dir_name in taken or (self._studies_dir / dir_name).exists()
+        ):
+            n += 1
+            dir_name = f"{base}-{n}"
+        return dir_name
 
     def _follow_default_study(self, label: str) -> None:
         """Catch up with another process renaming or deleting the default study.
