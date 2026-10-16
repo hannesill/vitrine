@@ -160,9 +160,10 @@ class StudyManager:
         If study is None, uses this manager's default study, labelled with the
         time of its first use, so every card a process publishes without a
         label lands in one study. If a study with the same label already
-        exists (within StudyManager lifetime), returns the existing study.
-        A labelled study that another process renamed or deleted is started
-        anew under the requested label, as a fresh process would.
+        exists, here or on disk, returns the existing study, so a long-lived
+        process sees studies that another process (the server) created,
+        renamed or deleted since, as a fresh process would. A labelled study
+        renamed away or deleted is started anew under the requested label.
 
         Args:
             study: User-provided study label, or None for auto.
@@ -181,18 +182,20 @@ class StudyManager:
         else:
             self._catch_up(study)
 
+        dir_name = self._label_to_dir.get(study)
+        if dir_name is None:
+            dir_name = self._find_on_disk(study)
+
         # Return existing study if label matches
-        if study in self._label_to_dir:
-            dir_name = self._label_to_dir[study]
+        if dir_name is not None:
             if dir_name in self._stores:
                 return study, self._stores[dir_name]
             # Rebuild store if somehow evicted
             return study, self._load_study(dir_name)
 
         # Create new study
-        dir_name = _make_study_dir_name(study)
+        dir_name = self._make_study_dir(study)
         study_dir = self._studies_dir / dir_name
-        study_dir.mkdir(parents=True, exist_ok=True)
 
         # Write study metadata
         meta = {
@@ -387,6 +390,46 @@ class StudyManager:
         for cid in to_remove:
             del self._card_index[cid]
         self._all_cards_cache = None
+
+    def _find_on_disk(self, label: str) -> str | None:
+        """Pick up a study that has this label on disk but not in memory.
+
+        Another process may have created it, or renamed a study to it, after
+        this manager discovered studies. Like discovery, the newest of several
+        studies with one label wins.
+        """
+        if not self._studies_dir.is_dir():
+            return None
+        found = None
+        for study_dir in sorted(self._studies_dir.iterdir()):
+            if study_dir.is_dir() and _read_label(study_dir) == label:
+                found = study_dir.name
+        if found is None:
+            return None
+        # Renamed in place (a new label that sanitizes alike keeps the dir)
+        known = [lbl for lbl, dn in self._label_to_dir.items() if dn == found]
+        for old_label in known:
+            self._moved(old_label, found, label, found)
+        self._label_to_dir[label] = found
+        return found
+
+    def _make_study_dir(self, label: str) -> str:
+        """Create a new study directory and return its name.
+
+        Never reuses an existing directory, which would overwrite another
+        study's meta.json: a label that sanitizes alike, or one created in the
+        same second by another process, gets a numbered suffix.
+        """
+        base = _make_study_dir_name(label)
+        dir_name = base
+        n = 1
+        while True:
+            try:
+                (self._studies_dir / dir_name).mkdir(parents=True)
+                return dir_name
+            except FileExistsError:
+                n += 1
+                dir_name = f"{base}-{n}"
 
     def clean_studies(self, older_than: str = "7d") -> int:
         """Remove studies older than a given age.

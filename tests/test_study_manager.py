@@ -57,6 +57,27 @@ def one_second_apart(monkeypatch):
     monkeypatch.setattr(study_manager, "datetime", Clock)
 
 
+@pytest.fixture
+def same_second(monkeypatch):
+    """Freeze the clock so every study is created in the same second."""
+    from datetime import datetime, timezone
+
+    import vitrine.study_manager as study_manager
+
+    frozen = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen
+
+    monkeypatch.setattr(study_manager, "datetime", Clock)
+
+
+def _start_time(study_dir):
+    return json.loads((study_dir / "meta.json").read_text())["start_time"]
+
+
 class TestSanitizeLabel:
     def test_basic(self):
         assert _sanitize_label("sepsis-mortality") == "sepsis-mortality"
@@ -187,7 +208,42 @@ class TestGetOrCreateStudy:
         studies = StudyManager(display_dir).list_studies()
         assert [(s["label"], s["card_count"]) for s in studies] == [(label, 1)]
 
-    def test_label_renamed_by_another_process_starts_anew(self, manager, display_dir):
+    def test_label_created_by_another_process_is_reused(self, manager, display_dir):
+        """A study the server or another publisher made is found on disk."""
+        from vitrine.renderer import render
+
+        _, theirs = StudyManager(display_dir).get_or_create_study("cohort")
+        render("theirs", study="cohort", store=theirs)
+        start_time = _start_time(theirs.session_dir)
+
+        label, store = manager.get_or_create_study("cohort")
+        render("ours", study=label, store=store)
+        assert store.session_dir == theirs.session_dir
+        assert _start_time(store.session_dir) == start_time
+        studies = StudyManager(display_dir).list_studies()
+        assert [(s["label"], s["card_count"]) for s in studies] == [("cohort", 2)]
+
+    def test_label_renamed_to_by_another_process_is_reused(self, manager, display_dir):
+        """The server renames 'cohort' to 'cohort-v1'; publishing there reuses it."""
+        from vitrine.renderer import render
+
+        _, store = manager.get_or_create_study("cohort")
+        render("before", study="cohort", store=store)
+        server = StudyManager(display_dir)
+        assert server.rename_study("cohort", "cohort-v1")
+        renamed = display_dir / "studies" / server.get_dir_for_label("cohort-v1")
+        start_time = _start_time(renamed)
+
+        label, store = manager.get_or_create_study("cohort-v1")
+        render("after", study=label, store=store)
+        assert store.session_dir == renamed
+        assert _start_time(renamed) == start_time
+        studies = StudyManager(display_dir).list_studies()
+        assert [(s["label"], s["card_count"]) for s in studies] == [("cohort-v1", 2)]
+
+    def test_label_renamed_away_by_another_process_starts_anew(
+        self, manager, display_dir
+    ):
         """The caller asked for the label by name, so it gets a study by that name."""
         from vitrine.renderer import render
 
@@ -229,6 +285,49 @@ class TestGetOrCreateStudy:
         ]
         assert sorted(c.study for c in fresh.list_all_cards()) == ["Cohort", "cohort"]
 
+    def test_stale_label_finds_study_renamed_to_it(
+        self, manager, display_dir, one_second_apart
+    ):
+        """Another study renamed to a label that went stale here is the one used."""
+        from vitrine.renderer import render
+
+        _, store = manager.get_or_create_study("cohort")
+        render("cohort card", study="cohort", store=store)
+        _, store = manager.get_or_create_study("draft")
+        render("draft card", study="draft", store=store)
+        server = StudyManager(display_dir)
+        assert server.rename_study("cohort", "cohort-v1")
+        assert server.rename_study("draft", "cohort")
+        renamed = display_dir / "studies" / server.get_dir_for_label("cohort")
+
+        label, store = manager.get_or_create_study("cohort")
+        render("after", study=label, store=store)
+        assert store.session_dir == renamed
+        studies = StudyManager(display_dir).list_studies()
+        assert sorted((s["label"], s["card_count"]) for s in studies) == [
+            ("cohort", 2),
+            ("cohort-v1", 1),
+        ]
+
+    def test_label_renamed_in_place_by_another_process_is_reused(
+        self, manager, display_dir
+    ):
+        """A new label that sanitizes alike keeps the directory; no stale label stays."""
+        _, store = manager.get_or_create_study("Cohort")
+        assert StudyManager(display_dir).rename_study("Cohort", "cohort")
+
+        _, renamed = manager.get_or_create_study("cohort")
+        assert renamed is store
+        assert [s["label"] for s in manager.list_studies()] == ["cohort"]
+
+    def test_creates_study_after_studies_dir_is_removed(self, manager):
+        import shutil
+
+        shutil.rmtree(manager._studies_dir)
+        label, store = manager.get_or_create_study("cohort")
+        assert label == "cohort"
+        assert (store.session_dir / "meta.json").exists()
+
     def test_label_deleted_by_another_process_starts_anew(self, manager, display_dir):
         from vitrine.renderer import render
 
@@ -239,6 +338,17 @@ class TestGetOrCreateStudy:
         render("after", study=label, store=store)
         studies = StudyManager(display_dir).list_studies()
         assert [(s["label"], s["card_count"]) for s in studies] == [("cohort", 1)]
+
+    def test_new_study_never_reuses_a_directory(self, manager, same_second):
+        """Labels that sanitize alike, created in the same second, stay apart."""
+        _, store1 = manager.get_or_create_study("Cohort")
+        _, store2 = manager.get_or_create_study("cohort")
+        assert store1.session_dir != store2.session_dir
+        labels = [
+            json.loads((store.session_dir / "meta.json").read_text())["label"]
+            for store in (store1, store2)
+        ]
+        assert labels == ["Cohort", "cohort"]
 
     def test_different_labels_different_studies(self, manager):
         _, store1 = manager.get_or_create_study("study-a")
@@ -595,22 +705,6 @@ class TestRenameStudy:
     def test_rename_to_empty_returns_false(self, manager):
         manager.get_or_create_study("nonempty")
         assert manager.rename_study("nonempty", "  ") is False
-
-    @pytest.fixture
-    def same_second(self, monkeypatch):
-        """Freeze the clock so every study is created in the same second."""
-        from datetime import datetime, timezone
-
-        import vitrine.study_manager as study_manager
-
-        frozen = datetime(2026, 1, 1, tzinfo=timezone.utc)
-
-        class Clock(datetime):
-            @classmethod
-            def now(cls, tz=None):
-                return frozen
-
-        monkeypatch.setattr(study_manager, "datetime", Clock)
 
     def test_rename_never_takes_another_studys_directory(
         self, manager, display_dir, same_second
