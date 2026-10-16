@@ -223,6 +223,8 @@ The exit code is 0, 1 for `failed`, and 3 for `status --json` when no server run
 - An owner that has exited counts as gone even while it lingers: as a zombie its parent has not reaped yet on Linux and macOS, or held open by another process's handle on Windows.
 - A PID can be reused once its process has exited. The server records each owner's start time on Linux, macOS and Windows and does not mistake a later process with the same PID for the owner. Elsewhere it compares PIDs only, and a PID reused within the two seconds between checks keeps the server running until that process exits.
 
+**Agent sessions.** Every card records the agent session that made it ([ADR-0002](docs/adr/0002-cards-reference-agent-sessions.md)). A host that runs agents sets `VITRINE_AGENT_HOST` (its name), `VITRINE_AGENT_SESSION_ID` and, if it has one, `VITRINE_AGENT_TURN_ID` in each agent's environment. Without them, Vitrine recognises a Claude Code session by `CLAUDE_CODE_SESSION_ID`, and records anything else as host `unknown`. `show(..., replace=card_id)` keeps the card's previous version, with the session that made it, under the study's `revisions/`.
+
 ## Python API
 
 ```python

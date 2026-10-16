@@ -247,6 +247,76 @@ class TestReplace:
         # Should push both the original and the replacement
         assert len(mock_server.pushed_cards) == 2
 
+    def test_replace_keeps_the_previous_version(self, store, mock_server, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "first")
+        card_id = display.show("original", title="Draft")
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "second")
+        display.show("updated", title="Final", replace=card_id)
+
+        [revision] = store.list_revisions(card_id)
+        assert revision["revision"] == 1
+        assert revision["card"]["title"] == "Draft"
+        assert revision["card"]["preview"]["text"] == "original"
+        assert revision["card"]["agent"]["session_id"] == "first"
+        assert store.get_card(card_id).agent.session_id == "second"
+
+    def test_each_replace_adds_a_revision(self, store, mock_server):
+        card_id = display.show("v1")
+        display.show("v2", replace=card_id)
+        display.show("v3", replace=card_id)
+        revisions = store.list_revisions(card_id)
+        assert [r["revision"] for r in revisions] == [1, 2]
+        assert [r["card"]["preview"]["text"] for r in revisions] == ["v1", "v2"]
+
+    def test_replace_keeps_the_previous_artifact(self, store, mock_server):
+        first = pd.DataFrame({"x": [1, 2, 3]})
+        card_id = display.show(first)
+        display.show(pd.DataFrame({"x": [9]}), replace=card_id)
+
+        [revision] = store.list_revisions(card_id)
+        [name] = revision["artifacts"]
+        kept = store.session_dir / "revisions" / card_id / name
+        pd.testing.assert_frame_equal(pd.read_parquet(kept), first)
+        assert len(store.read_table_page(card_id, offset=0, limit=50)["rows"]) == 1
+
+    def test_replace_unknown_card_keeps_no_revision(self, store, mock_server):
+        display.show("orphan", replace="nonexistent")
+        assert store.list_revisions("nonexistent") == []
+
+
+class TestAgentSession:
+    def test_show_records_the_agent_session(self, store, mock_server, monkeypatch):
+        monkeypatch.setenv("VITRINE_AGENT_HOST", "lincei")
+        monkeypatch.setenv("VITRINE_AGENT_SESSION_ID", "thread-1")
+        card_id = display.show("hello")
+        agent = store.get_card(card_id).agent
+        assert (agent.host, agent.session_id) == ("lincei", "thread-1")
+        assert agent.recorded_at
+
+    def test_show_without_a_host_records_unknown(self, store, mock_server):
+        card_id = display.show("hello")
+        assert store.get_card(card_id).agent.host == "unknown"
+
+    def test_section_records_the_agent_session(self, store, mock_server, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "claude-1")
+        display.section("Results")
+        [card] = store.list_cards()
+        assert card.agent.session_id == "claude-1"
+
+    def test_pushed_card_carries_the_agent_session(
+        self, store, mock_server, monkeypatch
+    ):
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "claude-1")
+        display.show("hello")
+        assert mock_server.pushed_cards[0].agent.session_id == "claude-1"
+
+    def test_study_remembers_the_claude_code_session(
+        self, study_manager, mock_server, monkeypatch
+    ):
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "claude-1")
+        display.show("hello", study="sepsis")
+        assert study_manager.get_session_id("sepsis") == "claude-1"
+
 
 class TestModuleState:
     def test_initial_state(self):
@@ -1565,6 +1635,12 @@ class TestProgress:
         card = next(c for c in store.list_cards() if c.card_id == card_id)
         text = card.preview.get("text", "") or card.preview.get("markdown", "")
         assert "\u2713" in text
+
+    def test_progress_updates_keep_no_revisions(self, store, mock_server):
+        with display.progress("Running analysis") as status:
+            card_id = status._card_id
+            status("Step 2 of 3...")
+        assert store.list_revisions(card_id) == []
 
     def test_progress_with_study(self, study_manager, mock_server):
         """progress() passes study parameter through."""

@@ -19,7 +19,7 @@ from typing import Any
 
 import pandas as pd
 
-from vitrine._types import CardDescriptor, CardProvenance, CardType, Form
+from vitrine._types import AgentContext, CardDescriptor, CardProvenance, CardType, Form
 from vitrine.artifacts import ArtifactStore
 from vitrine.redaction import Redactor
 
@@ -159,7 +159,6 @@ def _render_dataframe(
         preview=preview,
         provenance=_build_provenance(source),
     )
-    store.store_card(card)
     return card
 
 
@@ -183,7 +182,6 @@ def _render_markdown(
         preview={"text": text},
         provenance=_build_provenance(source),
     )
-    store.store_card(card)
     return card
 
 
@@ -211,7 +209,6 @@ def _render_dict(
         preview={"items": items},
         provenance=_build_provenance(source),
     )
-    store.store_card(card)
     return card
 
 
@@ -291,7 +288,6 @@ def _render_plotly(
         preview={"spec": spec},
         provenance=_build_provenance(source),
     )
-    store.store_card(card)
     return card
 
 
@@ -347,7 +343,6 @@ def _render_matplotlib(
         },
         provenance=_build_provenance(source),
     )
-    store.store_card(card)
     return card
 
 
@@ -374,7 +369,6 @@ def _render_decision(
         preview=form.to_dict(),
         provenance=_build_provenance(source),
     )
-    store.store_card(card)
     return card
 
 
@@ -409,6 +403,7 @@ def render(
     study: str | None = None,
     store: ArtifactStore | None = None,
     redactor: Redactor | None = None,
+    agent: AgentContext | None = None,
 ) -> CardDescriptor:
     """Convert a Python object to a CardDescriptor, storing artifacts as needed.
 
@@ -428,9 +423,10 @@ def render(
         study: Group cards into a named study.
         store: ArtifactStore for persisting large objects.
         redactor: Redactor instance for PHI/PII masking.
+        agent: Agent session the card comes from.
 
     Returns:
-        A CardDescriptor describing the rendered card.
+        A CardDescriptor describing the rendered card, stored in ``store``.
 
     Raises:
         ValueError: If no artifact store is provided for types that need one.
@@ -442,18 +438,21 @@ def render(
         redactor = Redactor()
 
     if isinstance(obj, Form):
-        return _render_decision(obj, title, description, source, study, store)
+        card = _render_decision(obj, title, description, source, study, store)
     elif isinstance(obj, pd.DataFrame):
-        return _render_dataframe(
+        card = _render_dataframe(
             obj, title, description, source, study, store, redactor
         )
     elif _is_plotly_figure(obj):
-        return _render_plotly(obj, title, description, source, study, store)
+        card = _render_plotly(obj, title, description, source, study, store)
     elif _is_matplotlib_figure(obj):
-        return _render_matplotlib(obj, title, description, source, study, store)
+        card = _render_matplotlib(obj, title, description, source, study, store)
     elif isinstance(obj, str):
-        return _render_markdown(obj, title, description, source, study, store)
+        card = _render_markdown(obj, title, description, source, study, store)
     elif isinstance(obj, dict):
-        return _render_dict(obj, title, description, source, study, store)
+        card = _render_dict(obj, title, description, source, study, store)
     else:
-        return _render_repr(obj, title, description, source, study, store)
+        card = _render_repr(obj, title, description, source, study, store)
+    card.agent = agent
+    store.store_card(card)
+    return card
