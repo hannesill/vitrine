@@ -16,8 +16,10 @@ Tests cover:
 - stop_server() preserves study data
 """
 
+import hashlib
 import json
 import os
+import runpy
 
 import pandas as pd
 import pytest
@@ -316,6 +318,103 @@ class TestAgentSession:
         monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "claude-1")
         display.show("hello", study="sepsis")
         assert study_manager.get_session_id("sepsis") == "claude-1"
+
+
+def _run_script(path, body):
+    """Run ``body`` as the script at ``path`` and return its globals."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body)
+    return runpy.run_path(str(path))
+
+
+class TestCodeOrigin:
+    @pytest.fixture
+    def project(self, tmp_path, monkeypatch):
+        root = tmp_path / "project"
+        monkeypatch.setenv("VITRINE_DATA_DIR", str(root / ".vitrine"))
+        return root
+
+    def test_records_the_calling_script(self, store, mock_server, project):
+        body = "import vitrine\n\ncard_id = vitrine.show('hello')\n"
+        card_id = _run_script(project / "analysis" / "cohort.py", body)["card_id"]
+        code = store.get_card(card_id).code
+        assert code.path == "analysis/cohort.py"
+        assert code.line == 3
+        assert code.sha256 == hashlib.sha256(body.encode()).hexdigest()
+
+    def test_keeps_a_copy_of_the_script(self, store, mock_server, project):
+        body = "import vitrine\ncard_id = vitrine.show('hello')\n"
+        card_id = _run_script(project / "cohort.py", body)["card_id"]
+        assert store.read_code(store.get_card(card_id).code.sha256) == body
+
+    def test_keeps_one_copy_per_version_of_a_script(self, store, mock_server, project):
+        body = "import vitrine\nvitrine.show('a')\nvitrine.show('b')\n"
+        _run_script(project / "cohort.py", body)
+        assert len(list((store.session_dir / "code").iterdir())) == 1
+
+    def test_script_outside_the_project_keeps_its_full_path(
+        self, store, mock_server, project, tmp_path
+    ):
+        script = tmp_path / "elsewhere" / "run.py"
+        card_id = _run_script(script, "import vitrine\ncard_id = vitrine.show('x')\n")[
+            "card_id"
+        ]
+        assert store.get_card(card_id).code.path == str(script.resolve())
+
+    def test_code_without_a_file(self, store, mock_server, project):
+        namespace = {}
+        source = "import vitrine\ncard_id = vitrine.show('hello')\n"
+        exec(compile(source, "<stdin>", "exec"), namespace)
+        code = store.get_card(namespace["card_id"]).code
+        assert (code.path, code.line, code.sha256) == ("<stdin>", 2, None)
+        assert not (store.session_dir / "code").exists()
+
+    def test_skips_vitrine_helpers(self, store, mock_server, project):
+        body = (
+            "import vitrine\n"
+            "with vitrine.progress('Build') as status:\n"
+            "    card_id = status._card_id\n"
+        )
+        card_id = _run_script(project / "build.py", body)["card_id"]
+        assert store.get_card(card_id).code.path == "build.py"
+
+    def test_section_records_its_code(self, store, mock_server, project):
+        _run_script(
+            project / "report.py", "import vitrine\nvitrine.section('Results')\n"
+        )
+        [card] = store.list_cards()
+        assert (card.code.path, card.code.line) == ("report.py", 2)
+
+    def test_replace_takes_the_new_code(self, store, mock_server, project):
+        draft = "import vitrine\ncard_id = vitrine.show('v1')\n"
+        card_id = _run_script(project / "draft.py", draft)["card_id"]
+        final = f"import vitrine\nvitrine.show('v2', replace={card_id!r})\n"
+        _run_script(project / "final.py", final)
+        assert store.get_card(card_id).code.path == "final.py"
+        [revision] = store.list_revisions(card_id)
+        assert revision["card"]["code"]["path"] == "draft.py"
+
+
+class TestWhy:
+    def test_show_records_why(self, store, mock_server):
+        card_id = display.show("42 patients", why="Counts the exclusions")
+        assert store.get_card(card_id).why == "Counts the exclusions"
+
+    def test_why_is_optional(self, store, mock_server):
+        card_id = display.show("42 patients")
+        assert store.get_card(card_id).why is None
+
+    def test_replace_without_why_keeps_it(self, store, mock_server):
+        card_id = display.show("v1", why="Counts the exclusions")
+        display.show("v2", replace=card_id)
+        assert store.get_card(card_id).why == "Counts the exclusions"
+
+    def test_replace_with_why_changes_it(self, store, mock_server):
+        card_id = display.show("v1", why="First reason")
+        display.show("v2", why="Second reason", replace=card_id)
+        assert store.get_card(card_id).why == "Second reason"
+        [revision] = store.list_revisions(card_id)
+        assert revision["card"]["why"] == "First reason"
 
 
 class TestModuleState:

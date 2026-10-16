@@ -12,6 +12,8 @@ stays lightweight. The artifact store uses a session directory layout:
     ├── revisions/
     │   ├── {card_id}.json      # Earlier versions of a replaced card
     │   └── {card_id}/{n}.*     # Their artifact files, by revision number
+    ├── code/
+    │   └── {sha256}.py         # Scripts that made cards, by content hash
     └── meta.json               # Session metadata
 """
 
@@ -33,7 +35,13 @@ from typing import Any
 import duckdb
 import pandas as pd
 
-from vitrine._types import AgentContext, CardDescriptor, CardProvenance, CardType
+from vitrine._types import (
+    AgentContext,
+    CardDescriptor,
+    CardProvenance,
+    CardType,
+    CodeOrigin,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +102,15 @@ def _serialize_card(card: CardDescriptor) -> dict[str, Any]:
         }
     else:
         d["agent"] = None
+    if card.code:
+        d["code"] = {
+            "path": card.code.path,
+            "line": card.code.line,
+            "sha256": card.code.sha256,
+        }
+    else:
+        d["code"] = None
+    d["why"] = card.why
     return d
 
 
@@ -118,6 +135,14 @@ def _deserialize_card(d: dict[str, Any]) -> CardDescriptor:
             turn_id=a.get("turn_id"),
             recorded_at=a.get("recorded_at") or "",
         )
+    code = None
+    if d.get("code"):
+        c = d["code"]
+        code = CodeOrigin(
+            path=c.get("path") or "",
+            line=c.get("line"),
+            sha256=c.get("sha256"),
+        )
     return CardDescriptor(
         card_id=d["card_id"],
         card_type=CardType("decision" if d["card_type"] == "form" else d["card_type"]),
@@ -133,6 +158,8 @@ def _deserialize_card(d: dict[str, Any]) -> CardDescriptor:
         preview=d.get("preview", {}),
         provenance=provenance,
         agent=agent,
+        code=code,
+        why=d.get("why"),
         response_requested=d.get("response_requested", False),
         prompt=d.get("prompt"),
         timeout=d.get("timeout"),
@@ -311,6 +338,32 @@ class ArtifactStore:
             return json.loads(self._revisions_path(card_id).read_text())
         except (json.JSONDecodeError, FileNotFoundError):
             return []
+
+    def keep_code(self, sha256: str, source: bytes, suffix: str) -> None:
+        """Keep a copy of the script a card came from, once per version.
+
+        Copies live under ``code/``, named by the script's SHA-256, so a
+        card still shows the code that made it after the script changes.
+        """
+        path = self.session_dir / "code" / f"{sha256}{suffix}"
+        if path.exists():
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(source)
+            os.replace(tmp_path, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
+
+    def read_code(self, sha256: str) -> str | None:
+        """The kept copy of a script, by its SHA-256, or None."""
+        for path in (self.session_dir / "code").glob(f"{sha256}.*"):
+            return path.read_text(errors="replace")
+        return None
 
     def _append_to_index(self, card_dict: dict[str, Any]) -> None:
         """Append a card to the index."""

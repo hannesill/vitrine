@@ -18,7 +18,13 @@ import multiprocessing
 import pandas as pd
 import pytest
 
-from vitrine._types import AgentContext, CardDescriptor, CardProvenance, CardType
+from vitrine._types import (
+    AgentContext,
+    CardDescriptor,
+    CardProvenance,
+    CardType,
+    CodeOrigin,
+)
 from vitrine.artifacts import ArtifactStore
 
 
@@ -252,6 +258,25 @@ class TestAgentContext:
         del index[0]["agent"]
         store._index_path.write_text(json.dumps(index))
         assert store.get_card("card-001").agent is None
+
+
+class TestCodeAndWhy:
+    def test_round_trip_through_the_index(self, store, sample_card):
+        sample_card.code = CodeOrigin(path="analysis/cohort.py", line=12, sha256="ab12")
+        sample_card.why = "Counts the exclusions"
+        store.store_card(sample_card)
+        card = store.get_card("card-001")
+        assert card.code == sample_card.code
+        assert card.why == "Counts the exclusions"
+
+    def test_keep_code_writes_each_version_once(self, store):
+        store.keep_code("ab12", b"print(1)\n", ".py")
+        store.keep_code("ab12", b"print(1)\n", ".py")
+        assert [p.name for p in (store.session_dir / "code").iterdir()] == ["ab12.py"]
+        assert store.read_code("ab12") == "print(1)\n"
+
+    def test_read_unknown_code(self, store):
+        assert store.read_code("ab12") is None
 
 
 class TestRevisions:

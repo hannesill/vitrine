@@ -33,6 +33,7 @@ from vitrine._types import (
     Form,
     Question,
 )
+from vitrine.code_origin import CallingCode, calling_code
 
 __all__ = [
     "CardType",
@@ -128,6 +129,30 @@ def __getattr__(name: str) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Card code
+# ---------------------------------------------------------------------------
+
+
+def _project_root() -> Path | None:
+    """The directory holding the study store; card code paths are relative to it."""
+    if _st._study_manager is not None:
+        return _st._study_manager.display_dir.parent
+    from vitrine._utils import get_vitrine_dir
+
+    return get_vitrine_dir().parent
+
+
+def _keep_calling_code(store: Any, caller: CallingCode | None) -> None:
+    """Keep a copy of the script a card came from in the card's study."""
+    if store is None or caller is None or caller.source is None:
+        return
+    try:
+        store.keep_code(caller.origin.sha256, caller.source, caller.suffix)
+    except OSError:
+        logger.debug("Could not keep a copy of %s", caller.origin.path, exc_info=True)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -139,6 +164,7 @@ def show(
     *,
     study: str | None = None,
     source: str | None = None,
+    why: str | None = None,
     replace: str | None = None,
     position: str | None = None,
     wait: bool = False,
@@ -170,6 +196,8 @@ def show(
         description: Subtitle or context line.
         study: Group cards into a named study (for filtering).
         source: Provenance string (e.g., table name, query).
+        why: Why the card exists: the question it answers or the decision
+            it informs. A replace without one keeps the card's earlier why.
         replace: Card ID to update instead of appending. The card's
             previous version is kept as a revision.
         position: "top" to prepend instead of append.
@@ -204,6 +232,7 @@ def show(
     from vitrine.renderer import render
 
     agent = current_agent_context()
+    caller = calling_code(_project_root())
 
     # Resolve the store for this card via StudyManager
     store = _st._store  # backwards-compat fallback
@@ -230,7 +259,10 @@ def show(
             study=study,
             store=replace_store,
             agent=agent,
+            code=caller.origin if caller else None,
+            why=why,
         )
+        _keep_calling_code(replace_store, caller)
         if _keep_revision:
             replace_store.keep_revision(replace)
         # The original card takes everything render() produced, and keeps its
@@ -249,6 +281,8 @@ def show(
                     "artifact_type",
                     "provenance",
                     "agent",
+                    "code",
+                    *(("why",) if why is not None else ()),
                 )
             },
             artifact_id=replace if card.artifact_id is not None else None,
@@ -284,7 +318,10 @@ def show(
         study=study,
         store=store,
         agent=agent,
+        code=caller.origin if caller else None,
+        why=why,
     )
+    _keep_calling_code(store, caller)
 
     # Attach controls to the card preview for hybrid data+controls cards
     if controls:
@@ -371,6 +408,8 @@ def section(title: str, study: str | None = None) -> None:
     from vitrine.agent_context import current_agent_context
     from vitrine.renderer import _make_card_id, _make_timestamp
 
+    caller = calling_code(_project_root())
+
     # Resolve store via StudyManager if available
     store = _st._store
     if _st._study_manager is not None:
@@ -385,10 +424,12 @@ def section(title: str, study: str | None = None) -> None:
         study=study,
         preview={"title": title},
         agent=current_agent_context(),
+        code=caller.origin if caller else None,
     )
 
     if store is not None:
         store.store_card(card)
+        _keep_calling_code(store, caller)
     if _st._remote_url and _st._auth_token:
         _client._remote_command(
             _st._remote_url,
