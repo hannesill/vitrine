@@ -148,6 +148,8 @@ class StudyManager:
         time of its first use, so every card a process publishes without a
         label lands in one study. If a study with the same label already
         exists (within StudyManager lifetime), returns the existing study.
+        A labelled study that another process renamed or deleted is started
+        anew under the requested label, as a fresh process would.
 
         Args:
             study: User-provided study label, or None for auto.
@@ -165,12 +167,17 @@ class StudyManager:
             study = self._default_label
 
         # Return existing study if label matches
-        if study in self._label_to_dir:
-            dir_name = self._label_to_dir[study]
+        dir_name = self._label_to_dir.get(study)
+        if dir_name is not None and (self._studies_dir / dir_name).is_dir():
             if dir_name in self._stores:
                 return study, self._stores[dir_name]
             # Rebuild store if somehow evicted
             return study, self._load_study(dir_name)
+        if dir_name is not None:
+            # Another process (the server) renamed or deleted it. The caller
+            # asked for this label by name, so start a new study under it, as
+            # a fresh process would, rather than follow the rename
+            self._forget(study, dir_name)
 
         # Create new study
         dir_name = _make_study_dir_name(study)
