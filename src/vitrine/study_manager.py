@@ -53,6 +53,19 @@ def _make_study_dir_name(label: str) -> str:
     return f"{ts}_{_sanitize_label(label)}"
 
 
+def _read_meta(study_dir: Path) -> dict[str, Any]:
+    """Read a study's meta.json, or {} if it is missing or unreadable."""
+    try:
+        return json.loads((study_dir / "meta.json").read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _read_label(study_dir: Path) -> str:
+    """Read a study's label from its meta.json, falling back to the dir name."""
+    return _read_meta(study_dir).get("label", study_dir.name)
+
+
 def _parse_age(age_str: str) -> float:
     """Parse a duration string like '7d', '24h', '30m' into seconds.
 
@@ -163,21 +176,18 @@ class StudyManager:
                     "auto-%Y%m%d-%H%M%S"
                 )
             else:
-                self._follow_default_study(self._default_label)
+                self._catch_up(self._default_label)
             study = self._default_label
+        else:
+            self._catch_up(study)
 
         # Return existing study if label matches
-        dir_name = self._label_to_dir.get(study)
-        if dir_name is not None and (self._studies_dir / dir_name).is_dir():
+        if study in self._label_to_dir:
+            dir_name = self._label_to_dir[study]
             if dir_name in self._stores:
                 return study, self._stores[dir_name]
             # Rebuild store if somehow evicted
             return study, self._load_study(dir_name)
-        if dir_name is not None:
-            # Another process (the server) renamed or deleted it. The caller
-            # asked for this label by name, so start a new study under it, as
-            # a fresh process would, rather than follow the rename
-            self._forget(study, dir_name)
 
         # Create new study
         dir_name = _make_study_dir_name(study)
@@ -321,22 +331,29 @@ class StudyManager:
             dir_name = f"{base}-{n}"
         return dir_name
 
-    def _follow_default_study(self, label: str) -> None:
-        """Catch up with another process renaming or deleting the default study.
+    def _catch_up(self, label: str) -> None:
+        """Catch up with another process renaming or deleting a study.
 
-        The server keeps its own manager, so a study renamed in the browser
-        moves on disk under this one. A rename keeps the study's start time,
-        which finds it again; a deleted study is started anew.
+        The server keeps its own manager, so a study renamed or deleted in the
+        browser changes on disk under this one. A new label that sanitizes
+        alike keeps the directory and is read from its meta.json. A rename
+        that moves the directory is followed only for the default study, whose
+        start time finds it again. A labelled study renamed away or deleted is
+        dropped: the caller asked for that label by name, so it is started
+        anew, as a fresh process would.
         """
         dir_name = self._label_to_dir.get(label)
-        if dir_name is None or (self._studies_dir / dir_name).is_dir():
+        if dir_name is None:
             return
-        if self._default_start_time is not None:
+        study_dir = self._studies_dir / dir_name
+        if study_dir.is_dir():
+            current = _read_label(study_dir)
+            if current != label:
+                self._moved(label, dir_name, current, dir_name)
+            return
+        if label == self._default_label and self._default_start_time is not None:
             for study_dir in self._studies_dir.iterdir():
-                try:
-                    meta = json.loads((study_dir / "meta.json").read_text())
-                except (json.JSONDecodeError, OSError):
-                    continue
+                meta = _read_meta(study_dir)
                 if meta.get("start_time") == self._default_start_time:
                     new_label = meta.get("label", study_dir.name)
                     self._moved(label, dir_name, new_label, study_dir.name)
@@ -933,16 +950,7 @@ class StudyManager:
             if dir_name in self._stores:
                 continue  # Already known
 
-            meta_path = study_dir / "meta.json"
-            label = dir_name  # fallback
-            if meta_path.exists():
-                try:
-                    meta = json.loads(meta_path.read_text())
-                    label = meta.get("label", dir_name)
-                except (json.JSONDecodeError, OSError):
-                    pass
-
-            self._label_to_dir[label] = dir_name
+            self._label_to_dir[_read_label(study_dir)] = dir_name
             self._load_study(dir_name)
 
     def _discover_studies(self) -> None:
@@ -955,18 +963,7 @@ class StudyManager:
                 continue
 
             dir_name = study_dir.name
-            meta_path = study_dir / "meta.json"
-
-            # Read label from meta.json
-            label = dir_name  # fallback
-            if meta_path.exists():
-                try:
-                    meta = json.loads(meta_path.read_text())
-                    label = meta.get("label", dir_name)
-                except (json.JSONDecodeError, OSError):
-                    pass
-
-            self._label_to_dir[label] = dir_name
+            self._label_to_dir[_read_label(study_dir)] = dir_name
             self._load_study(dir_name)
 
     def _load_study(self, dir_name: str) -> ArtifactStore:

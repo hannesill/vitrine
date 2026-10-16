@@ -38,6 +38,25 @@ def manager(display_dir):
     return StudyManager(display_dir)
 
 
+@pytest.fixture
+def one_second_apart(monkeypatch):
+    """Advance the clock a second per reading, so no two studies share a name."""
+    import itertools
+    from datetime import datetime, timedelta, timezone
+
+    import vitrine.study_manager as study_manager
+
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    seconds = itertools.count()
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return start + timedelta(seconds=next(seconds))
+
+    monkeypatch.setattr(study_manager, "datetime", Clock)
+
+
 class TestSanitizeLabel:
     def test_basic(self):
         assert _sanitize_label("sepsis-mortality") == "sepsis-mortality"
@@ -109,22 +128,8 @@ class TestGetOrCreateStudy:
         assert label.startswith("auto-")
         assert store is not None
 
-    def test_auto_label_is_kept_for_later_cards(self, manager, monkeypatch):
+    def test_auto_label_is_kept_for_later_cards(self, manager, one_second_apart):
         """Cards published without a study stay in one study, however far apart."""
-        import itertools
-        from datetime import datetime, timedelta, timezone
-
-        import vitrine.study_manager as study_manager
-
-        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        seconds = itertools.count()
-
-        class Clock(datetime):
-            @classmethod
-            def now(cls, tz=None):
-                return start + timedelta(seconds=next(seconds))
-
-        monkeypatch.setattr(study_manager, "datetime", Clock)
         first, store1 = manager.get_or_create_study(None)
         second, store2 = manager.get_or_create_study(None)
         assert first == second == "auto-20260101-000000"
@@ -150,6 +155,24 @@ class TestGetOrCreateStudy:
         assert label == "renamed"
         studies = StudyManager(display_dir).list_studies()
         assert [(s["label"], s["card_count"]) for s in studies] == [("renamed", 2)]
+
+    def test_auto_label_follows_a_rename_in_place_by_another_process(
+        self, manager, display_dir
+    ):
+        """A new label that sanitizes alike keeps the directory; it is followed too."""
+        from vitrine.renderer import render
+
+        first, store = manager.get_or_create_study(None)
+        render("before", study=first, store=store)
+        assert StudyManager(display_dir).rename_study(first, first.upper())
+
+        label, renamed = manager.get_or_create_study(None)
+        render("after", study=label, store=renamed)
+        assert label == first.upper()
+        assert renamed is store
+        assert [s["label"] for s in manager.list_studies()] == [label]
+        fresh = StudyManager(display_dir)
+        assert [c.study for c in fresh.list_all_cards()] == [label, label]
 
     def test_auto_study_deleted_by_another_process_starts_anew(
         self, manager, display_dir
@@ -180,6 +203,31 @@ class TestGetOrCreateStudy:
             ("cohort", 1),
             ("cohort-v1", 1),
         ]
+
+    def test_label_renamed_in_place_by_another_process_starts_anew(
+        self, manager, display_dir, one_second_apart
+    ):
+        """A rename that keeps the directory still frees the old label."""
+        from vitrine.renderer import render
+
+        _, store = manager.get_or_create_study("Cohort")
+        render("before", study="Cohort", store=store)
+        assert StudyManager(display_dir).rename_study("Cohort", "cohort")
+
+        label, new_store = manager.get_or_create_study("Cohort")
+        render("after", study=label, store=new_store)
+        assert label == "Cohort"
+        assert new_store.session_dir != store.session_dir
+        assert sorted(s["label"] for s in manager.list_studies()) == [
+            "Cohort",
+            "cohort",
+        ]
+        fresh = StudyManager(display_dir)
+        assert sorted((s["label"], s["card_count"]) for s in fresh.list_studies()) == [
+            ("Cohort", 1),
+            ("cohort", 1),
+        ]
+        assert sorted(c.study for c in fresh.list_all_cards()) == ["Cohort", "cohort"]
 
     def test_label_deleted_by_another_process_starts_anew(self, manager, display_dir):
         from vitrine.renderer import render
