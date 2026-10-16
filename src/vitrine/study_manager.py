@@ -188,6 +188,11 @@ class StudyManager:
 
         # Return existing study if label matches
         if dir_name is not None:
+            if study == self._default_label and self._default_start_time is None:
+                # Another process made it, first publishing in the same second.
+                # Its start time finds it again after a rename
+                meta = _read_meta(self._studies_dir / dir_name)
+                self._default_start_time = meta.get("start_time")
             if dir_name in self._stores:
                 return study, self._stores[dir_name]
             # Rebuild store if somehow evicted
@@ -355,7 +360,7 @@ class StudyManager:
                 self._moved(label, dir_name, current, dir_name)
             return
         if label == self._default_label and self._default_start_time is not None:
-            for study_dir in self._studies_dir.iterdir():
+            for study_dir in self._study_dirs():
                 meta = _read_meta(study_dir)
                 if meta.get("start_time") == self._default_start_time:
                     new_label = meta.get("label", study_dir.name)
@@ -396,22 +401,24 @@ class StudyManager:
 
         Another process may have created it, or renamed a study to it, after
         this manager discovered studies. Like discovery, the newest of several
-        studies with one label wins.
+        studies with one label wins. Every known study is caught up first, so
+        one that process renamed or deleted on the way keeps no stale label.
         """
-        if not self._studies_dir.is_dir():
-            return None
+        for known in list(self._label_to_dir):
+            self._catch_up(known)
         found = None
-        for study_dir in sorted(self._studies_dir.iterdir()):
-            if study_dir.is_dir() and _read_label(study_dir) == label:
+        for study_dir in self._study_dirs():
+            if _read_label(study_dir) == label:
                 found = study_dir.name
-        if found is None:
-            return None
-        # Renamed in place (a new label that sanitizes alike keeps the dir)
-        known = [lbl for lbl, dn in self._label_to_dir.items() if dn == found]
-        for old_label in known:
-            self._moved(old_label, found, label, found)
-        self._label_to_dir[label] = found
+        if found is not None:
+            self._label_to_dir[label] = found
         return found
+
+    def _study_dirs(self) -> list[Path]:
+        """List the study directories on disk, oldest first."""
+        if not self._studies_dir.is_dir():
+            return []
+        return sorted(p for p in self._studies_dir.iterdir() if p.is_dir())
 
     def _make_study_dir(self, label: str) -> str:
         """Create a new study directory and return its name.
@@ -982,13 +989,7 @@ class StudyManager:
         Invalidates the all-cards cache so the next list_all_cards() rebuilds.
         """
         self._all_cards_cache = None
-        if not self._studies_dir.exists():
-            return
-
-        for study_dir in self._studies_dir.iterdir():
-            if not study_dir.is_dir():
-                continue
-
+        for study_dir in self._study_dirs():
             dir_name = study_dir.name
             if dir_name in self._stores:
                 continue  # Already known
@@ -998,16 +999,9 @@ class StudyManager:
 
     def _discover_studies(self) -> None:
         """Scan existing study directories and rebuild in-memory state."""
-        if not self._studies_dir.exists():
-            return
-
-        for study_dir in sorted(self._studies_dir.iterdir()):
-            if not study_dir.is_dir():
-                continue
-
-            dir_name = study_dir.name
-            self._label_to_dir[_read_label(study_dir)] = dir_name
-            self._load_study(dir_name)
+        for study_dir in self._study_dirs():
+            self._label_to_dir[_read_label(study_dir)] = study_dir.name
+            self._load_study(study_dir.name)
 
     def _load_study(self, dir_name: str) -> ArtifactStore:
         """Load a study directory into memory and index its cards."""
@@ -1018,5 +1012,6 @@ class StudyManager:
         # Index cards
         for card in store.list_cards():
             self._card_index[card.card_id] = dir_name
+        self._all_cards_cache = None
 
         return store

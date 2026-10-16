@@ -195,6 +195,22 @@ class TestGetOrCreateStudy:
         fresh = StudyManager(display_dir)
         assert [c.study for c in fresh.list_all_cards()] == [label, label]
 
+    def test_auto_study_made_by_another_process_follows_a_rename(
+        self, manager, display_dir, same_second
+    ):
+        """Two processes first publishing in the same second share one auto study."""
+        first, theirs = StudyManager(display_dir).get_or_create_study(None)
+        label, ours = manager.get_or_create_study(None)
+        assert label == first
+        assert ours.session_dir == theirs.session_dir
+        assert StudyManager(display_dir).rename_study(first, "renamed")
+
+        label, _ = manager.get_or_create_study(None)
+        assert label == "renamed"
+        assert [s["label"] for s in StudyManager(display_dir).list_studies()] == [
+            "renamed"
+        ]
+
     def test_auto_study_deleted_by_another_process_starts_anew(
         self, manager, display_dir
     ):
@@ -238,8 +254,20 @@ class TestGetOrCreateStudy:
         render("after", study=label, store=store)
         assert store.session_dir == renamed
         assert _start_time(renamed) == start_time
+        assert [s["label"] for s in manager.list_studies()] == ["cohort-v1"]
         studies = StudyManager(display_dir).list_studies()
         assert [(s["label"], s["card_count"]) for s in studies] == [("cohort-v1", 2)]
+
+    def test_label_found_on_disk_shows_in_all_cards(self, manager, display_dir):
+        """Cards of a study picked up from disk are listed, even after a cached list."""
+        from vitrine.renderer import render
+
+        assert manager.list_all_cards() == []
+        _, theirs = StudyManager(display_dir).get_or_create_study("cohort")
+        card = render("theirs", study="cohort", store=theirs)
+
+        manager.get_or_create_study("cohort")
+        assert [c.card_id for c in manager.list_all_cards()] == [card.card_id]
 
     def test_label_renamed_away_by_another_process_starts_anew(
         self, manager, display_dir
@@ -323,9 +351,12 @@ class TestGetOrCreateStudy:
     def test_creates_study_after_studies_dir_is_removed(self, manager):
         import shutil
 
+        manager.get_or_create_study(None)
         shutil.rmtree(manager._studies_dir)
         label, store = manager.get_or_create_study("cohort")
         assert label == "cohort"
+        assert (store.session_dir / "meta.json").exists()
+        _, store = manager.get_or_create_study(None)
         assert (store.session_dir / "meta.json").exists()
 
     def test_label_deleted_by_another_process_starts_anew(self, manager, display_dir):
@@ -765,6 +796,21 @@ class TestRenameStudy:
             "2026-01-01_000000_b-2",
             "2026-01-01_000000_b-3",
         ]
+
+    def test_rename_keeps_a_study_numbered_on_creation(self, manager, same_second):
+        """A study created next to a twin is not moved onto the twin's directory."""
+        manager.get_or_create_study("Cohort")
+        manager.get_or_create_study("cohort")
+        twin = manager._studies_dir / "2026-01-01_000000_cohort"
+
+        assert manager.rename_study("cohort", "COHORT") is True
+        assert manager._label_to_dir == {
+            "Cohort": twin.name,
+            "COHORT": "2026-01-01_000000_cohort-2",
+        }
+        assert json.loads((twin / "meta.json").read_text())["label"] == "Cohort"
+        restarted = StudyManager(manager.display_dir)
+        assert restarted._label_to_dir == manager._label_to_dir
 
 
 class TestDiscovery:
