@@ -520,6 +520,82 @@ class TestRenameStudy:
         manager.get_or_create_study("nonempty")
         assert manager.rename_study("nonempty", "  ") is False
 
+    @pytest.fixture
+    def same_second(self, monkeypatch):
+        """Freeze the clock so every study is created in the same second."""
+        from datetime import datetime, timezone
+
+        import vitrine.study_manager as study_manager
+
+        frozen = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen
+
+        monkeypatch.setattr(study_manager, "datetime", Clock)
+
+    def test_rename_never_takes_another_studys_directory(
+        self, manager, display_dir, same_second
+    ):
+        """A name taken by a study created in the same second gets a suffix."""
+        from vitrine.renderer import render
+
+        _, store_a = manager.get_or_create_study("a")
+        _, store_b = manager.get_or_create_study("b")
+        card_a = render("from a", study="a", store=store_a)
+        card_b = render("from b", study="b", store=store_b)
+        a_dir = manager._studies_dir / "2026-01-01_000000_a"
+        b_dir = manager._studies_dir / "2026-01-01_000000_b"
+
+        assert manager.rename_study("a", "B") is True
+
+        moved_dir = manager._studies_dir / "2026-01-01_000000_b-2"
+        assert manager._label_to_dir == {"B": moved_dir.name, "b": b_dir.name}
+        assert not a_dir.exists()
+        assert store_a.session_dir == moved_dir
+        assert store_b.session_dir == b_dir
+        meta_b = json.loads((b_dir / "meta.json").read_text())
+        assert meta_b["label"] == "b"
+        assert meta_b["dir_name"] == b_dir.name
+        meta_moved = json.loads((moved_dir / "meta.json").read_text())
+        assert meta_moved["label"] == "B"
+        assert meta_moved["dir_name"] == moved_dir.name
+        assert [c.card_id for c in manager.list_all_cards(study="B")] == [
+            card_a.card_id
+        ]
+        assert [c.card_id for c in manager.list_all_cards(study="b")] == [
+            card_b.card_id
+        ]
+
+        # A fresh process finds both studies, each with its own card
+        restarted = StudyManager(display_dir)
+        assert restarted._label_to_dir == {"B": moved_dir.name, "b": b_dir.name}
+        assert [c.card_id for c in restarted.list_all_cards(study="B")] == [
+            card_a.card_id
+        ]
+        assert [c.card_id for c in restarted.list_all_cards(study="b")] == [
+            card_b.card_id
+        ]
+
+    def test_rename_suffix_skips_taken_names_but_keeps_own(self, manager, same_second):
+        for label in ("a", "b", "c"):
+            manager.get_or_create_study(label)
+
+        assert manager.rename_study("a", "B") is True
+        assert manager.rename_study("c", "b!") is True
+        assert manager._label_to_dir["b!"] == "2026-01-01_000000_b-3"
+
+        # Sanitizes to "b" again: the study stays where it is
+        assert manager.rename_study("B", "b?") is True
+        assert manager._label_to_dir["b?"] == "2026-01-01_000000_b-2"
+        assert sorted(p.name for p in manager._studies_dir.iterdir()) == [
+            "2026-01-01_000000_b",
+            "2026-01-01_000000_b-2",
+            "2026-01-01_000000_b-3",
+        ]
+
 
 class TestDiscovery:
     def test_discovers_existing_studies(self, display_dir):
