@@ -164,6 +164,34 @@ class TestGetOrCreateStudy:
         studies = StudyManager(display_dir).list_studies()
         assert [(s["label"], s["card_count"]) for s in studies] == [(label, 1)]
 
+    def test_label_renamed_by_another_process_starts_anew(self, manager, display_dir):
+        """The caller asked for the label by name, so it gets a study by that name."""
+        from vitrine.renderer import render
+
+        _, store = manager.get_or_create_study("cohort")
+        render("before", study="cohort", store=store)
+        assert StudyManager(display_dir).rename_study("cohort", "cohort-v1")
+
+        label, store = manager.get_or_create_study("cohort")
+        render("after", study=label, store=store)
+        assert label == "cohort"
+        studies = StudyManager(display_dir).list_studies()
+        assert sorted((s["label"], s["card_count"]) for s in studies) == [
+            ("cohort", 1),
+            ("cohort-v1", 1),
+        ]
+
+    def test_label_deleted_by_another_process_starts_anew(self, manager, display_dir):
+        from vitrine.renderer import render
+
+        manager.get_or_create_study("cohort")
+        assert StudyManager(display_dir).delete_study("cohort")
+
+        label, store = manager.get_or_create_study("cohort")
+        render("after", study=label, store=store)
+        studies = StudyManager(display_dir).list_studies()
+        assert [(s["label"], s["card_count"]) for s in studies] == [("cohort", 1)]
+
     def test_different_labels_different_studies(self, manager):
         _, store1 = manager.get_or_create_study("study-a")
         _, store2 = manager.get_or_create_study("study-b")
