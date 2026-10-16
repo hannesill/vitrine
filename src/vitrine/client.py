@@ -331,11 +331,13 @@ def _ensure_study_manager() -> Any:
 def register_session(study: str | None = None) -> None:
     """Associate the current Claude Code session with a study.
 
-    If CLAUDE_SESSION_ID is in the environment, stores it in the
-    study's meta.json. Called automatically on first show() for a study.
-    No-op if the env var is not set.
+    Stores CLAUDE_CODE_SESSION_ID (or the older CLAUDE_SESSION_ID) in the
+    study's meta.json, where the study list's resume button finds it.
+    Called automatically by show(). No-op if neither variable is set.
     """
-    session_id = os.environ.get("CLAUDE_SESSION_ID")
+    session_id = os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get(
+        "CLAUDE_SESSION_ID"
+    )
     if not session_id:
         return
     sm = _ensure_study_manager()

@@ -44,8 +44,10 @@ At `show()` Vitrine fills the context from the first source that applies:
 3. Codex: to be decided after checking what the Codex CLI passes to child processes.
 4. Otherwise host `unknown` and no session.
 
-This replaces the study-level `session_id` in `meta.json`. Whichever session wrote last
-overwrites that field, and it is read from `CLAUDE_SESSION_ID`, which Claude Code does not set.
+The study-level `session_id` in `meta.json` stays for one job: the study list's resume button,
+which copies `claude --resume <id>` for the study's latest Claude Code session. It used to be read
+from `CLAUDE_SESSION_ID`, which Claude Code does not set, so the button never appeared. It now
+reads `CLAUDE_CODE_SESSION_ID`.
 
 ## What hosts supply
 
@@ -87,10 +89,6 @@ a record shows only its stored identifiers.
 - An exported study copies the matched session details into the file, because no host is present
   when someone opens it later.
 - Without a running host, the card page shows whatever the host last pushed.
-- The study list's "resume" button, which copies `claude --resume <session_id>`, reads the
-  study-level `session_id` and so has never appeared. It should use the agent context of the
-  study's most recent card instead.
-- "Session" has three other meanings in Vitrine's code: the server instance (`_session_id`), the
-  legacy store directory (`ArtifactStore(session_dir, session_id)`), and the study's Claude
-  session in `meta.json`. The third goes away with this decision. Only "agent session" should keep
-  the word, so the first two need new names.
+- "Session" also names two unrelated things in Vitrine's code: the server instance
+  (`_session_id`) and the legacy store directory (`ArtifactStore(session_dir, session_id)`). Both
+  should get other names, so that "session" in Vitrine only ever means an agent session.

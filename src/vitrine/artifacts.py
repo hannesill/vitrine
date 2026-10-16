@@ -9,6 +9,9 @@ stays lightweight. The artifact store uses a session directory layout:
     │   ├── {card_id}.parquet   # DataFrame artifacts
     │   ├── {card_id}.json      # Plotly specs, key-value data
     │   └── {card_id}.svg       # Rendered matplotlib figures
+    ├── revisions/
+    │   ├── {card_id}.json      # Earlier versions of a replaced card
+    │   └── {card_id}/{n}.*     # Their artifact files, by revision number
     └── meta.json               # Session metadata
 """
 
@@ -30,7 +33,7 @@ from typing import Any
 import duckdb
 import pandas as pd
 
-from vitrine._types import CardDescriptor, CardProvenance, CardType
+from vitrine._types import AgentContext, CardDescriptor, CardProvenance, CardType
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +85,15 @@ def _serialize_card(card: CardDescriptor) -> dict[str, Any]:
         }
     else:
         d["provenance"] = None
+    if card.agent:
+        d["agent"] = {
+            "host": card.agent.host,
+            "session_id": card.agent.session_id,
+            "turn_id": card.agent.turn_id,
+            "recorded_at": card.agent.recorded_at,
+        }
+    else:
+        d["agent"] = None
     return d
 
 
@@ -97,6 +109,15 @@ def _deserialize_card(d: dict[str, Any]) -> CardDescriptor:
             dataset=p.get("dataset"),
             timestamp=p.get("timestamp"),
         )
+    agent = None
+    if d.get("agent"):
+        a = d["agent"]
+        agent = AgentContext(
+            host=a.get("host") or "unknown",
+            session_id=a.get("session_id"),
+            turn_id=a.get("turn_id"),
+            recorded_at=a.get("recorded_at") or "",
+        )
     return CardDescriptor(
         card_id=d["card_id"],
         card_type=CardType("decision" if d["card_type"] == "form" else d["card_type"]),
@@ -111,6 +132,7 @@ def _deserialize_card(d: dict[str, Any]) -> CardDescriptor:
         artifact_type=d.get("artifact_type"),
         preview=d.get("preview", {}),
         provenance=provenance,
+        agent=agent,
         response_requested=d.get("response_requested", False),
         prompt=d.get("prompt"),
         timeout=d.get("timeout"),
@@ -239,6 +261,56 @@ class ArtifactStore:
             kept = [c for c in cards if c.get("card_id") != card_id]
             if len(kept) != len(cards):
                 self._write_index(kept)
+
+    def _revisions_path(self, card_id: str) -> Path:
+        return self.session_dir / "revisions" / f"{card_id}.json"
+
+    def keep_revision(self, card_id: str) -> int | None:
+        """Keep a card's current version before ``show(replace=...)`` overwrites it.
+
+        The card's index entry and a copy of its artifact files go under
+        ``revisions/``; the entry carries the agent session that made that
+        version. Returns the revision number, or None for a card that is not
+        in this store.
+        """
+        entry = next(
+            (d for d in self._read_index() if d.get("card_id") == card_id), None
+        )
+        if entry is None:
+            return None
+        path = self._revisions_path(card_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with self._changing(path):
+            revisions = self.list_revisions(card_id)
+            number = len(revisions) + 1
+            kept: list[str] = []
+            for source in sorted(self._artifacts_dir.glob(f"{card_id}.*")):
+                target = path.parent / card_id / f"{number}{source.suffix}"
+                target.parent.mkdir(exist_ok=True)
+                shutil.copy2(source, target)
+                kept.append(target.name)
+            revisions.append(
+                {
+                    "revision": number,
+                    "replaced_at": datetime.now(timezone.utc).isoformat(),
+                    "card": entry,
+                    "artifacts": kept,
+                }
+            )
+            self._write_json(path, revisions)
+        return number
+
+    def list_revisions(self, card_id: str) -> list[dict[str, Any]]:
+        """A card's earlier versions, oldest first.
+
+        Each has ``revision`` (from 1), ``replaced_at``, ``card`` (the index
+        entry as it was) and ``artifacts`` (file names under
+        ``revisions/{card_id}/``).
+        """
+        try:
+            return json.loads(self._revisions_path(card_id).read_text())
+        except (json.JSONDecodeError, FileNotFoundError):
+            return []
 
     def _append_to_index(self, card_dict: dict[str, Any]) -> None:
         """Append a card to the index."""

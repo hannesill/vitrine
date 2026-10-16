@@ -18,7 +18,7 @@ import multiprocessing
 import pandas as pd
 import pytest
 
-from vitrine._types import CardDescriptor, CardProvenance, CardType
+from vitrine._types import AgentContext, CardDescriptor, CardProvenance, CardType
 from vitrine.artifacts import ArtifactStore
 
 
@@ -233,6 +233,59 @@ class TestUpdateCard:
     def test_update_nonexistent(self, store):
         result = store.update_card("nonexistent", title="X")
         assert result is None
+
+
+class TestAgentContext:
+    def test_round_trips_through_the_index(self, store, sample_card):
+        sample_card.agent = AgentContext(
+            host="lincei",
+            session_id="thread-1",
+            turn_id="turn-3",
+            recorded_at="2026-10-16T12:00:00+00:00",
+        )
+        store.store_card(sample_card)
+        assert store.get_card("card-001").agent == sample_card.agent
+
+    def test_card_from_before_agent_contexts_has_none(self, store, sample_card):
+        store.store_card(sample_card)
+        index = json.loads(store._index_path.read_text())
+        del index[0]["agent"]
+        store._index_path.write_text(json.dumps(index))
+        assert store.get_card("card-001").agent is None
+
+
+class TestRevisions:
+    def test_keeps_the_card_and_its_artifact(self, store, sample_card, sample_df):
+        store.store_card(sample_card)
+        store.store_dataframe("card-001", sample_df)
+        assert store.keep_revision("card-001") == 1
+
+        [revision] = store.list_revisions("card-001")
+        assert revision["card"]["title"] == "Test"
+        assert revision["replaced_at"]
+        assert revision["artifacts"] == ["1.parquet"]
+        kept = store.session_dir / "revisions" / "card-001" / "1.parquet"
+        pd.testing.assert_frame_equal(pd.read_parquet(kept), sample_df)
+        # The card's own artifact stays where it was.
+        assert (store._artifacts_dir / "card-001.parquet").exists()
+
+    def test_card_without_artifact(self, store, sample_card):
+        store.store_card(sample_card)
+        store.keep_revision("card-001")
+        [revision] = store.list_revisions("card-001")
+        assert revision["artifacts"] == []
+
+    def test_unknown_card(self, store):
+        assert store.keep_revision("nonexistent") is None
+        assert store.list_revisions("nonexistent") == []
+
+    def test_revisions_move_with_the_study(self, store, sample_card, tmp_path):
+        store.store_card(sample_card)
+        store.keep_revision("card-001")
+        new_dir = tmp_path / "renamed"
+        store.session_dir.rename(new_dir)
+        store.relocate(new_dir, "renamed")
+        assert [r["revision"] for r in store.list_revisions("card-001")] == [1]
 
 
 class TestGetArtifact:

@@ -133,6 +133,27 @@ class CardProvenance:
 
 
 @dataclass
+class AgentContext:
+    """The agent session a card's content came from (ADR-0002).
+
+    Holds identifiers only. Titles, models and links back into the session
+    change over time, so the host supplies them separately.
+    """
+
+    host: str
+    """Program that ran the agent: 'lincei', 'claude-code', 'codex' or 'unknown'."""
+
+    session_id: str | None = None
+    """The host's identifier for the agent session."""
+
+    turn_id: str | None = None
+    """The host's identifier for the turn, when the host provides one."""
+
+    recorded_at: str = ""
+    """ISO-format UTC timestamp when vitrine recorded the context."""
+
+
+@dataclass
 class CardDescriptor:
     """Describes a display card and its associated data.
 
@@ -180,6 +201,10 @@ class CardDescriptor:
 
     provenance: CardProvenance | None = None
     """Provenance metadata for reproducibility."""
+
+    agent: AgentContext | None = None
+    """Agent session that produced the card's current content. Earlier
+    versions keep their own in the store's revisions."""
 
     response_requested: bool = False
     """True when the agent is waiting for a user response (wait=True)."""

@@ -146,6 +146,7 @@ def show(
     timeout: float = 600,
     actions: list[str] | None = None,
     controls: list[Any] | None = None,
+    _keep_revision: bool = True,
 ) -> Any:
     """Push any displayable object to the browser.
 
@@ -169,7 +170,8 @@ def show(
         description: Subtitle or context line.
         study: Group cards into a named study (for filtering).
         source: Provenance string (e.g., table name, query).
-        replace: Card ID to update instead of appending.
+        replace: Card ID to update instead of appending. The card's
+            previous version is kept as a revision.
         position: "top" to prepend instead of append.
         wait: If True, block until user responds in the browser.
         prompt: Question shown to the user (requires wait=True).
@@ -197,8 +199,11 @@ def show(
 
     _client._ensure_started()
 
+    from vitrine.agent_context import current_agent_context
     from vitrine.artifacts import _serialize_card
     from vitrine.renderer import render
+
+    agent = current_agent_context()
 
     # Resolve the store for this card via StudyManager
     store = _st._store  # backwards-compat fallback
@@ -224,7 +229,10 @@ def show(
             source=source,
             study=study,
             store=replace_store,
+            agent=agent,
         )
+        if _keep_revision:
+            replace_store.keep_revision(replace)
         # The original card takes everything render() produced, and keeps its
         # id: its artifact moves under that id too, because the server finds
         # an artifact's study through the card that owns it.
@@ -240,6 +248,7 @@ def show(
                     "preview",
                     "artifact_type",
                     "provenance",
+                    "agent",
                 )
             },
             artifact_id=replace if card.artifact_id is not None else None,
@@ -274,6 +283,7 @@ def show(
         source=source,
         study=study,
         store=store,
+        agent=agent,
     )
 
     # Attach controls to the card preview for hybrid data+controls cards
@@ -358,6 +368,7 @@ def section(title: str, study: str | None = None) -> None:
     _client._ensure_started()
 
     from vitrine._types import CardDescriptor, CardType
+    from vitrine.agent_context import current_agent_context
     from vitrine.renderer import _make_card_id, _make_timestamp
 
     # Resolve store via StudyManager if available
@@ -373,6 +384,7 @@ def section(title: str, study: str | None = None) -> None:
         timestamp=_make_timestamp(),
         study=study,
         preview={"title": title},
+        agent=current_agent_context(),
     )
 
     if store is not None:
@@ -467,6 +479,7 @@ class ProgressContext:
                 title=self._title,
                 study=self._study,
                 replace=self._card_id,
+                _keep_revision=False,
             )
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
@@ -477,6 +490,7 @@ class ProgressContext:
                     title=self._title,
                     study=self._study,
                     replace=self._card_id,
+                    _keep_revision=False,
                 )
             else:
                 show(
@@ -484,6 +498,7 @@ class ProgressContext:
                     title=self._title,
                     study=self._study,
                     replace=self._card_id,
+                    _keep_revision=False,
                 )
         # Never suppress exceptions
         return None
