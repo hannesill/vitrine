@@ -154,6 +154,23 @@ class AgentContext:
 
 
 @dataclass
+class CodeOrigin:
+    """The line of agent code that made a card."""
+
+    path: str
+    """Script path relative to the project root (the directory holding the
+    study store), absolute outside it, or a name such as '<stdin>' for code
+    that has no file."""
+
+    line: int | None = None
+    """Line of the call that made the card."""
+
+    sha256: str | None = None
+    """SHA-256 of the script at that moment, or None when its source could
+    not be read. The study keeps a copy of the script under this hash."""
+
+
+@dataclass
 class CardDescriptor:
     """Describes a display card and its associated data.
 
@@ -205,6 +222,13 @@ class CardDescriptor:
     agent: AgentContext | None = None
     """Agent session that produced the card's current content. Earlier
     versions keep their own in the store's revisions."""
+
+    code: CodeOrigin | None = None
+    """Agent code that produced the card's current content."""
+
+    why: str | None = None
+    """Why the card exists, in the agent's words: the question it answers or
+    the decision it informs."""
 
     response_requested: bool = False
     """True when the agent is waiting for a user response (wait=True)."""

@@ -173,6 +173,15 @@ with progress("Building cohort", study="sepsis-v1") as status:
 # Card auto-updates to ✓ complete (or ✗ failed on exception)
 ```
 
+### Where a Card Came From
+
+Every card records the agent session that made it, the script and line that called `show()`, and the SHA-256 of that script. The study keeps a copy of each script version, so a card still shows the code that made it after the script changes. Code run from stdin or `python -c` has no file to copy and records its line only. `replace=` keeps the card's previous version, with its session and code, under the study's `revisions/`.
+
+```python
+show(cohort, title="Final cohort", study="sepsis-v1",
+     why="Applies the ICU-stay exclusion the researcher approved")
+```
+
 ## Architecture
 
 ```
@@ -223,14 +232,14 @@ The exit code is 0, 1 for `failed`, and 3 for `status --json` when no server run
 - An owner that has exited counts as gone even while it lingers: as a zombie its parent has not reaped yet on Linux and macOS, or held open by another process's handle on Windows.
 - A PID can be reused once its process has exited. The server records each owner's start time on Linux, macOS and Windows and does not mistake a later process with the same PID for the owner. Elsewhere it compares PIDs only, and a PID reused within the two seconds between checks keeps the server running until that process exits.
 
-**Agent sessions.** Every card records the agent session that made it ([ADR-0002](docs/adr/0002-cards-reference-agent-sessions.md)). A host that runs agents sets `VITRINE_AGENT_HOST` (its name), `VITRINE_AGENT_SESSION_ID` and, if it has one, `VITRINE_AGENT_TURN_ID` in each agent's environment. Without them, Vitrine recognises a Claude Code session by `CLAUDE_CODE_SESSION_ID`, and records anything else as host `unknown`. `show(..., replace=card_id)` keeps the card's previous version, with the session that made it, under the study's `revisions/`.
+**Agent sessions.** Every card records the agent session that made it ([ADR-0002](docs/adr/0002-cards-reference-agent-sessions.md)). A host that runs agents sets `VITRINE_AGENT_HOST` (its name), `VITRINE_AGENT_SESSION_ID` and, if it has one, `VITRINE_AGENT_TURN_ID` in each agent's environment. Without them, Vitrine recognises a Claude Code session by `CLAUDE_CODE_SESSION_ID`, and records anything else as host `unknown`.
 
 ## Python API
 
 ```python
 # Display
 show(obj, title=None, description=None, *, study=None, source=None,
-     replace=None, wait=False, prompt=None, timeout=600,
+     why=None, replace=None, wait=False, prompt=None, timeout=600,
      actions=None) -> DisplayHandle | DisplayResponse
 section(title, study=None) -> None
 

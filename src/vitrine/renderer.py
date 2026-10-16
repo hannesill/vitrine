@@ -19,7 +19,14 @@ from typing import Any
 
 import pandas as pd
 
-from vitrine._types import AgentContext, CardDescriptor, CardProvenance, CardType, Form
+from vitrine._types import (
+    AgentContext,
+    CardDescriptor,
+    CardProvenance,
+    CardType,
+    CodeOrigin,
+    Form,
+)
 from vitrine.artifacts import ArtifactStore
 from vitrine.redaction import Redactor
 
@@ -404,6 +411,8 @@ def render(
     store: ArtifactStore | None = None,
     redactor: Redactor | None = None,
     agent: AgentContext | None = None,
+    code: CodeOrigin | None = None,
+    why: str | None = None,
 ) -> CardDescriptor:
     """Convert a Python object to a CardDescriptor, storing artifacts as needed.
 
@@ -424,6 +433,8 @@ def render(
         store: ArtifactStore for persisting large objects.
         redactor: Redactor instance for PHI/PII masking.
         agent: Agent session the card comes from.
+        code: Agent code the card comes from.
+        why: Why the card exists, in the agent's words.
 
     Returns:
         A CardDescriptor describing the rendered card, stored in ``store``.
@@ -454,5 +465,7 @@ def render(
     else:
         card = _render_repr(obj, title, description, source, study, store)
     card.agent = agent
+    card.code = code
+    card.why = why
     store.store_card(card)
     return card
