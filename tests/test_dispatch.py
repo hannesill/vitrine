@@ -1225,6 +1225,42 @@ class TestRunAgent:
         mock_proc.stdin.write.assert_called_once()
         mock_proc.stdin.close.assert_called_once()
 
+    async def test_paper_without_output_dir_runs_in_study_workspace(
+        self, mock_server, study_mgr, monkeypatch
+    ):
+        """A study built from show() alone still gets a workspace the agent runs in."""
+        import asyncio
+
+        study_mgr.get_or_create_study("s1")
+        assert study_mgr.get_output_dir("s1") is None
+        info = await create_agent_card("paper", "s1", mock_server)
+
+        monkeypatch.setattr(
+            "vitrine.dispatch.shutil.which", lambda _b: "/usr/local/bin/claude"
+        )
+        mock_proc = MagicMock(spec=subprocess.Popen)
+        mock_proc.pid = 42
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = MagicMock()
+        mock_popen = MagicMock(return_value=mock_proc)
+        monkeypatch.setattr("vitrine.dispatch.subprocess.Popen", mock_popen)
+
+        def _no_monitor(coro):
+            coro.close()
+            return MagicMock(spec=asyncio.Task)
+
+        monkeypatch.setattr(asyncio, "create_task", _no_monitor)
+
+        await run_agent(info.card_id, mock_server)
+
+        output_dir = study_mgr.get_output_dir("s1")
+        workspace = output_dir / "paper" / info.card_id
+        assert workspace.is_dir()
+        assert mock_popen.call_args.kwargs["cwd"] == workspace
+        assert info.extra["paper_workspace"] == str(workspace)
+        prompt = mock_proc.stdin.write.call_args.args[0].decode()
+        assert str(workspace) in prompt
+
 
 # ---------------------------------------------------------------------------
 # _stream_monitor
@@ -1375,9 +1411,9 @@ class TestPaperWorkspace:
         (output_dir / "PROTOCOL.md").write_text("# Protocol")
         (output_dir / "RESULTS.md").write_text("# Results")
 
-        paper_dir, copied = _create_paper_workspace(output_dir)
+        paper_dir, copied = _create_paper_workspace(output_dir, "paper", "card1")
 
-        assert paper_dir == output_dir / "paper"
+        assert paper_dir == output_dir / "paper" / "card1"
         assert paper_dir.exists()
         assert set(copied) == {"scripts", "data", "plots", "PROTOCOL.md", "RESULTS.md"}
         assert (paper_dir / "scripts" / "01_cohort.py").read_text() == "print('hello')"
@@ -1422,7 +1458,7 @@ class TestPaperWorkspace:
         # Only create PROTOCOL.md — scripts, data, plots, RESULTS.md, REPORT.md missing
         (output_dir / "PROTOCOL.md").write_text("# Protocol")
 
-        paper_dir, copied = _create_paper_workspace(output_dir)
+        paper_dir, copied = _create_paper_workspace(output_dir, "paper", "card1")
 
         assert paper_dir.exists()
         assert copied == ["PROTOCOL.md"]
@@ -1430,21 +1466,43 @@ class TestPaperWorkspace:
         assert not (paper_dir / "scripts").exists()
         assert not (paper_dir / "plots").exists()
 
-    def test_create_workspace_skips_existing(self, tmp_path):
-        """Does not overwrite existing items in the paper directory."""
+    def test_create_workspace_refreshes_leftover_copies(self, tmp_path):
+        """Copies a crashed run left behind are replaced and cleaned up later."""
         output_dir = tmp_path / "study-output"
         output_dir.mkdir()
         (output_dir / "PROTOCOL.md").write_text("new version")
 
-        paper_dir = output_dir / "paper"
-        paper_dir.mkdir()
+        paper_dir = output_dir / "paper" / "card1"
+        paper_dir.mkdir(parents=True)
         (paper_dir / "PROTOCOL.md").write_text("old version")
 
-        _, copied = _create_paper_workspace(output_dir)
+        _, copied = _create_paper_workspace(output_dir, "paper", "card1")
 
-        # Should NOT have copied since destination already exists
-        assert "PROTOCOL.md" not in copied
-        assert (paper_dir / "PROTOCOL.md").read_text() == "old version"
+        assert copied == ["PROTOCOL.md"]
+        assert (paper_dir / "PROTOCOL.md").read_text() == "new version"
+
+    def test_concurrent_runs_get_separate_workspaces(self, tmp_path):
+        """One run's cleanup leaves another run's inputs and outputs alone."""
+        output_dir = tmp_path / "study-output"
+        (output_dir / "plots").mkdir(parents=True)
+        (output_dir / "plots" / "fig1.png").write_bytes(b"png")
+
+        first, first_copied = _create_paper_workspace(
+            output_dir, "presentation", "card1"
+        )
+        second, second_copied = _create_paper_workspace(
+            output_dir, "presentation", "card2"
+        )
+        assert first != second
+        assert first_copied == second_copied == ["plots"]
+        (first / "presentation.pptx").write_bytes(b"first")
+        (second / "presentation.pptx").write_bytes(b"second")
+
+        _cleanup_paper_workspace(first, first_copied)
+
+        assert (second / "plots" / "fig1.png").exists()
+        assert (first / "presentation.pptx").read_bytes() == b"first"
+        assert (second / "presentation.pptx").read_bytes() == b"second"
 
     def test_cleanup_missing_items_is_noop(self, tmp_path):
         """Cleanup doesn't fail if items are already gone."""

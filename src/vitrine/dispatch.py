@@ -672,25 +672,22 @@ async def run_agent(
 
     # For reproduce tasks, sandbox the output directory
     work_dir: Path | None = None
+    cwd: Path | None = None
     if info.task == "reproduce":
         output_dir = server.study_manager.get_output_dir(info.study)
         if output_dir and output_dir.exists():
             work_dir = _create_sandbox(output_dir)
             info.extra["sandbox"] = str(work_dir)
-    elif info.task == "paper":
+    elif info.task in ("paper", "presentation"):
+        # The skills write their deliverable relative to the workspace, so a
+        # study built from show() alone gets its own output directory first.
         output_dir = server.study_manager.get_output_dir(info.study)
-        if output_dir and output_dir.exists():
-            paper_dir, copied = _create_paper_workspace(output_dir, "paper")
-            work_dir = paper_dir
-            info.extra["paper_workspace"] = str(paper_dir)
-            info.extra["paper_copies"] = copied
-    elif info.task == "presentation":
-        output_dir = server.study_manager.get_output_dir(info.study)
-        if output_dir and output_dir.exists():
-            pres_dir, copied = _create_paper_workspace(output_dir, "presentation")
-            work_dir = pres_dir
-            info.extra["paper_workspace"] = str(pres_dir)
-            info.extra["paper_copies"] = copied
+        if output_dir is None:
+            output_dir = server.study_manager.register_output_dir(info.study)
+        work_dir, copied = _create_paper_workspace(output_dir, info.task, info.card_id)
+        cwd = work_dir
+        info.extra["paper_workspace"] = str(work_dir)
+        info.extra["paper_copies"] = copied
 
     prompt = build_prompt(
         info.task,
@@ -720,6 +717,7 @@ async def run_agent(
         stderr=subprocess.STDOUT,
         **detached_popen_kwargs(),
         env=env,
+        cwd=cwd,
     )
 
     # Feed prompt via stdin if the builder provided a payload, then close
@@ -876,19 +874,24 @@ def _cleanup_sandbox(sandbox: Path) -> None:
 
 
 def _create_paper_workspace(
-    output_dir: Path, subdir: str = "paper"
+    output_dir: Path, subdir: str, run_id: str
 ) -> tuple[Path, list[str]]:
-    """Create a workspace with copies of study artifacts."""
-    paper_dir = output_dir / subdir
-    paper_dir.mkdir(exist_ok=True)
+    """Create a run's workspace at ``output_dir/subdir/run_id`` with copies of
+    study artifacts.
+
+    Each run gets its own directory, so concurrent runs never share copies or
+    overwrite each other's deliverables, and copies are always refreshed.
+    """
+    paper_dir = output_dir / subdir / run_id
+    paper_dir.mkdir(parents=True, exist_ok=True)
     copied: list[str] = []
     for item in ("scripts", "data", "plots", "PROTOCOL.md", "RESULTS.md", "REPORT.md"):
         src = output_dir / item
         dst = paper_dir / item
-        if src.is_dir() and not dst.exists():
-            shutil.copytree(src, dst)
+        if src.is_dir():
+            shutil.copytree(src, dst, dirs_exist_ok=True)
             copied.append(item)
-        elif src.is_file() and not dst.exists():
+        elif src.is_file():
             shutil.copy2(src, dst)
             copied.append(item)
     logger.info(f"Created paper workspace: {paper_dir} (copied: {copied})")
