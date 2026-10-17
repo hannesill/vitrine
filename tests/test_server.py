@@ -1623,7 +1623,7 @@ class TestTaskPromptEndpoint:
         resp = client.get("/api/studies/bare/prompts/reproduce")
 
         assert resp.status_code == 200
-        assert "Output directory" not in resp.json()["prompt"]
+        assert "**Output directory:** none yet" in resp.json()["prompt"]
 
     def test_unknown_task_is_400(self, client, study_mgr):
         study_mgr.get_or_create_study("s1")

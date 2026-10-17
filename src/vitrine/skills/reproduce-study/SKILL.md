@@ -24,8 +24,12 @@ import pandas as pd
 from pathlib import Path
 
 STUDY = "<study-label>"  # the study label given with this task
-output_dir = register_output_dir(study=STUDY)
+# The output directory given with this task, or None if it gave none
+OUTPUT_DIR = "<output-directory>"
+output_dir = Path(OUTPUT_DIR) if OUTPUT_DIR else register_output_dir(study=STUDY)
 ```
+
+Call `register_output_dir()` only when the task gave no output directory. Without a path it points the study at a new, empty `output/` folder, cutting it off from the directory that holds its scripts and data.
 
 ## Procedure
 

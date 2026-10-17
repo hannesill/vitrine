@@ -19,10 +19,10 @@ def test_prompt_heads_skill_with_study_context(task):
     assert "\nname: " not in prompt.split("# ", 1)[0]
 
 
-def test_prompt_without_output_dir_omits_it():
+def test_prompt_without_output_dir_says_so():
     prompt = build_task_prompt("report", "s1", None)
 
-    assert "Output directory" not in prompt
+    assert "**Output directory:** none yet" in prompt
     assert "**Study:** `s1`" in prompt
 
 
@@ -46,3 +46,13 @@ def test_skills_do_not_assume_the_removed_agent_runner(skill):
 
     for phrase in ("dispatch", "additional_prompt", "workspace", "agent card"):
         assert phrase not in text
+
+
+@pytest.mark.parametrize("skill", sorted(TASK_SKILLS.values()))
+def test_skills_keep_the_studys_registered_output_dir(skill):
+    """register_output_dir() without a path repoints the study at a new, empty
+    output/ folder, so the skills must use the directory the prompt gives."""
+    text = (SKILLS_DIR / skill / "SKILL.md").read_text()
+
+    assert 'OUTPUT_DIR = "<output-directory>"' in text
+    assert "output_dir = register_output_dir(study=STUDY)" not in text
