@@ -387,6 +387,27 @@ class TestStarletteApp:
         assert resp.status_code == 200
         assert "vitrine" in resp.text
 
+    def test_index_versions_static_asset_urls(self, app, server):
+        import re
+
+        from starlette.testclient import TestClient
+
+        client = TestClient(app)
+        resp = client.get("/")
+        assert resp.headers["cache-control"] == "no-cache"
+
+        urls = re.findall(r'(?:src|href)="(/static/[^"]+)"', resp.text)
+        assert any(u.startswith("/static/js/cards.js") for u in urls)
+        assert any(u.startswith("/static/css/base.css") for u in urls)
+        for url in urls:
+            assert url.endswith(f"?v={server.asset_version}"), url
+
+        # The versioned URL still resolves to the file, and the browser
+        # must revalidate it rather than reuse a heuristically cached copy.
+        asset = client.get(urls[0])
+        assert asset.status_code == 200
+        assert asset.headers["cache-control"] == "no-cache"
+
     def test_websocket_connection(self, app):
         from starlette.testclient import TestClient
 
@@ -1741,3 +1762,17 @@ class TestConcurrentCardResponses:
 
         assert results["a"]["action"] == "confirm"
         assert results["b"]["action"] == "skip"
+
+
+class TestAssetVersion:
+    def test_changes_when_a_static_file_is_edited(self, tmp_path):
+        from vitrine.routes_card import compute_asset_version
+
+        (tmp_path / "js").mkdir()
+        script = tmp_path / "js" / "cards.js"
+        script.write_text("console.log('old');")
+        before = compute_asset_version(tmp_path)
+        assert compute_asset_version(tmp_path) == before
+
+        script.write_text("console.log('new');")
+        assert compute_asset_version(tmp_path) != before
