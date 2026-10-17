@@ -115,6 +115,18 @@ function addCard(cardData) {
   var actions = document.createElement('div');
   actions.className = 'card-actions';
 
+  // Card page button
+  var detailsBtn = document.createElement('button');
+  detailsBtn.className = 'card-action-btn card-details-btn';
+  detailsBtn.title = 'Card details: history, session and code';
+  detailsBtn.setAttribute('aria-label', 'Open card details');
+  detailsBtn.innerHTML = INFO_SVG;
+  detailsBtn.onclick = function(e) {
+    e.stopPropagation();
+    openCardPage(cardData.card_id);
+  };
+  actions.appendChild(detailsBtn);
+
   // Copy prompt button
   var promptBtn = document.createElement('button');
   promptBtn.className = 'card-action-btn copy-prompt-btn';

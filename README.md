@@ -182,6 +182,8 @@ show(cohort, title="Final cohort", study="sepsis-v1",
      why="Applies the ICU-stay exclusion the researcher approved")
 ```
 
+The ⓘ button on a card opens its page: the agent's reason, the session and the script line that made each version, what changed between versions, and the researcher's answers and annotations. Link to it with `#study=sepsis-v1&card=<id>&view=detail`.
+
 ## Architecture
 
 ```

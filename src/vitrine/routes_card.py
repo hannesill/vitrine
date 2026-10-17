@@ -16,6 +16,8 @@ from vitrine._utils import package_version
 from vitrine.artifacts import _serialize_card
 
 if TYPE_CHECKING:
+    from vitrine._types import CardDescriptor
+    from vitrine.artifacts import ArtifactStore
     from vitrine.server import DisplayServer
 
 _STATIC_DIR = None  # Set at import time below
@@ -93,6 +95,54 @@ async def api_card(server: DisplayServer, request: Request) -> JSONResponse:
         if card.card_id.startswith(id_prefix):
             return JSONResponse(_serialize_card(card))
     return JSONResponse({"error": f"Card {raw} not found"}, status_code=404)
+
+
+def _find_card(
+    server: DisplayServer, raw: str
+) -> tuple[CardDescriptor | None, ArtifactStore | None]:
+    """Find a card and its store by full ID, or by ID prefix as deep links use."""
+    store = server._resolve_store(raw)
+    card = store.get_card(raw) if store else None
+    if card is not None:
+        return card, store
+    prefix = raw.split("-")[0]
+    if server.study_manager:
+        server.study_manager.refresh()
+        card = server.study_manager.get_card_by_prefix(prefix)
+    elif server.store:
+        card = next(
+            (c for c in server.store.list_cards() if c.card_id.startswith(prefix)),
+            None,
+        )
+    if card is None:
+        return None, None
+    return card, server._resolve_store(card.card_id)
+
+
+async def api_card_history(server: DisplayServer, request: Request) -> JSONResponse:
+    """Return a card with its earlier versions and the code behind each one.
+
+    ``code`` maps each version's script SHA-256 to the copy the study kept;
+    versions whose code has no copy (stdin, ``python -c``) are left out.
+    """
+    raw = request.path_params["card_id"]
+    card, store = _find_card(server, raw)
+    if card is None or store is None:
+        return JSONResponse({"error": f"Card {raw} not found"}, status_code=404)
+
+    revisions = store.list_revisions(card.card_id)
+    hashes = [card.code.sha256 if card.code else None] + [
+        (r.get("card", {}).get("code") or {}).get("sha256") for r in revisions
+    ]
+    code: dict[str, str] = {}
+    for sha256 in hashes:
+        if sha256 and sha256 not in code:
+            source = store.read_code(sha256)
+            if source is not None:
+                code[sha256] = source
+    return JSONResponse(
+        {"card": _serialize_card(card), "revisions": revisions, "code": code}
+    )
 
 
 async def api_card_delete(server: DisplayServer, request: Request) -> JSONResponse:
