@@ -4,8 +4,7 @@
 // PNG EXPORT — one-click card → presentation-ready PNG
 // ================================================================
 
-var _html2canvasLoaded = false;
-var _html2canvasLoading = false;
+var _html2canvasPromise = null;
 
 // Light-theme values forced on every export clone
 var EXPORT_THEME = {
@@ -39,21 +38,24 @@ var EXPORT_STRIP_SELECTORS = [
   '.card-updating-overlay'
 ];
 
-function _loadHtml2Canvas(cb) {
-  if (_html2canvasLoaded) return cb();
-  if (_html2canvasLoading) {
-    // Another load in progress — poll
-    var poll = setInterval(function() {
-      if (_html2canvasLoaded) { clearInterval(poll); cb(); }
-    }, 50);
-    return;
+// Shared by concurrent exports; cleared on failure so the next export retries.
+function _loadHtml2Canvas() {
+  if (!_html2canvasPromise) {
+    _html2canvasPromise = new Promise(function(resolve, reject) {
+      var s = document.createElement('script');
+      s.src = '/static/vendor/html2canvas.min.js';
+      s.onload = function() { resolve(); };
+      s.onerror = function() {
+        _html2canvasPromise = null;
+        s.remove();
+        var err = new Error('Could not load ' + s.src);
+        err.userMessage = 'Failed to load export library';
+        reject(err);
+      };
+      document.head.appendChild(s);
+    });
   }
-  _html2canvasLoading = true;
-  var s = document.createElement('script');
-  s.src = '/static/vendor/html2canvas.min.js';
-  s.onload = function() { _html2canvasLoaded = true; _html2canvasLoading = false; cb(); };
-  s.onerror = function() { _html2canvasLoading = false; showToast('Failed to load export library', 'error'); };
-  document.head.appendChild(s);
+  return _html2canvasPromise;
 }
 
 function _sanitizeFilename(title) {
@@ -105,7 +107,32 @@ function _downloadBlob(blob, filename) {
   setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
 }
 
-function _renderClone(clone, cardEl, cardData) {
+function _buildExportClone(cardEl) {
+  // Capture a Plotly chart as a static image first; on failure, export
+  // without the Plotly special handling.
+  var plotlyDiv = cardEl.querySelector('.plotly-container');
+  var chartImage = plotlyDiv && typeof Plotly !== 'undefined'
+    ? Plotly.toImage(plotlyDiv, { format: 'png', width: 760, height: 450, scale: 2 })
+        .catch(function() { return null; })
+    : Promise.resolve(null);
+
+  return chartImage.then(function(imgUrl) {
+    var clone = cardEl.cloneNode(true);
+    _prepareClone(clone);
+    // Replace chart container with static image
+    var chartClone = imgUrl && clone.querySelector('.plotly-container');
+    if (chartClone) {
+      var img = document.createElement('img');
+      img.src = imgUrl;
+      img.style.width = '100%';
+      img.style.display = 'block';
+      chartClone.parentNode.replaceChild(img, chartClone);
+    }
+    return clone;
+  });
+}
+
+function _renderClone(clone, cardData) {
   // Offscreen container for rendering
   var container = document.createElement('div');
   container.style.position = 'fixed';
@@ -115,59 +142,42 @@ function _renderClone(clone, cardEl, cardData) {
   document.body.appendChild(container);
   container.appendChild(clone);
 
-  html2canvas(clone, {
+  return html2canvas(clone, {
     scale: 2,
     useCORS: true,
     backgroundColor: '#ffffff',
     logging: false
   }).then(function(canvas) {
-    canvas.toBlob(function(blob) {
-      var name = 'vitrine-' + _sanitizeFilename(cardData.title || cardData.card_type) + '.png';
-      _downloadBlob(blob, name);
-      cardEl.classList.remove('card-exporting');
-      showToast('PNG exported');
-      document.body.removeChild(container);
-    }, 'image/png');
-  }).catch(function(err) {
-    console.error('PNG export failed:', err);
-    cardEl.classList.remove('card-exporting');
-    showToast('Export failed', 'error');
-    document.body.removeChild(container);
+    return new Promise(function(resolve, reject) {
+      canvas.toBlob(function(blob) {
+        if (!blob) return reject(new Error('Canvas produced no PNG data'));
+        var name = 'vitrine-' + _sanitizeFilename(cardData.title || cardData.card_type) + '.png';
+        _downloadBlob(blob, name);
+        resolve();
+      }, 'image/png');
+    });
+  }).then(function() {
+    container.remove();
+  }, function(err) {
+    container.remove();
+    throw err;
   });
 }
 
 function exportCardAsPng(cardEl, cardData) {
   if (cardEl.classList.contains('card-exporting')) return;
+  // card-exporting disables pointer events, so every path must clear it.
   cardEl.classList.add('card-exporting');
+  function release() { cardEl.classList.remove('card-exporting'); }
 
-  _loadHtml2Canvas(function() {
-    // Check for Plotly chart
-    var plotlyDiv = cardEl.querySelector('.plotly-container');
-    if (plotlyDiv && typeof Plotly !== 'undefined') {
-      // Capture chart as static image first
-      Plotly.toImage(plotlyDiv, { format: 'png', width: 760, height: 450, scale: 2 }).then(function(imgUrl) {
-        var clone = cardEl.cloneNode(true);
-        _prepareClone(clone);
-        // Replace chart container with static image
-        var chartClone = clone.querySelector('.plotly-container');
-        if (chartClone) {
-          var img = document.createElement('img');
-          img.src = imgUrl;
-          img.style.width = '100%';
-          img.style.display = 'block';
-          chartClone.parentNode.replaceChild(img, chartClone);
-        }
-        _renderClone(clone, cardEl, cardData);
-      }).catch(function() {
-        // Fallback: export without Plotly special handling
-        var clone = cardEl.cloneNode(true);
-        _prepareClone(clone);
-        _renderClone(clone, cardEl, cardData);
-      });
-    } else {
-      var clone = cardEl.cloneNode(true);
-      _prepareClone(clone);
-      _renderClone(clone, cardEl, cardData);
-    }
-  });
+  _loadHtml2Canvas()
+    .then(function() { return _buildExportClone(cardEl); })
+    .then(function(clone) { return _renderClone(clone, cardData); })
+    .then(function() {
+      showToast('PNG exported');
+    }, function(err) {
+      console.error('PNG export failed:', err);
+      showToast((err && err.userMessage) || 'Export failed', 'error');
+    })
+    .then(release, release);
 }
