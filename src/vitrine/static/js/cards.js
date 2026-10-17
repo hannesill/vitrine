@@ -1791,7 +1791,9 @@ function _buildResponsePrompt(card) {
       lines.push('- ' + k + ': ' + card.response_values[k]);
     });
   }
-  if (card.response_summary) {
+  // The server stores a selection artifact only when rows or points were
+  // selected; otherwise the summary is just "from '<title>'".
+  if (card.response_artifact_id && card.response_summary) {
     lines.push('*Selection:* ' + card.response_summary);
   }
   if (card.response_message) {

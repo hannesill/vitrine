@@ -83,6 +83,22 @@ function buildResponseUI(cardData, cardEl) {
   return container;
 }
 
+// Same text as DisplayServer._build_summary() for a row selection
+function _selectionSummary(selectedRows, columns, title) {
+  var n = selectedRows.length;
+  var ncols = columns.length;
+  var shape = n + ' row' + (n !== 1 ? 's' : '');
+  if (ncols) shape += ' × ' + ncols + ' col' + (ncols !== 1 ? 's' : '');
+  var parts = [shape];
+  if (ncols) {
+    var colStr = columns.slice(0, 6).join(', ');
+    if (ncols > 6) colStr += ', …';
+    parts.push('(' + colStr + ')');
+  }
+  if (title) parts.push("from '" + title + "'");
+  return parts.join(' ');
+}
+
 function sendResponse(cardData, cardEl, action, message) {
   // Gather selected indices from selection state
   var selectedRows = null;
@@ -140,6 +156,10 @@ function sendResponse(cardData, cardEl, action, message) {
   cardData.response_action = action;
   cardData.response_message = message;
   cardData.response_values = formValues;
+  if (selectedRows && columns) {
+    cardData.response_artifact_id = 'resp-' + cardData.card_id;
+    cardData.response_summary = _selectionSummary(selectedRows, columns, cardData.title);
+  }
 
   // Update UI: remove response panel, keep decision branding
   var responseUI = cardEl.querySelector('.card-response-ui');

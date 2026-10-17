@@ -462,7 +462,7 @@ class TestParseGeminiEvent:
         kind, text, _ = _parse_gemini_event(json.dumps(_GEMINI_STREAM[-1]))
         assert (kind, text) == ("result", "")
 
-    def test_failed_result_reports_error_and_usage(self):
+    def test_failed_result_is_fatal_with_usage(self):
         line = {
             "type": "result",
             "status": "error",
@@ -470,8 +470,7 @@ class TestParseGeminiEvent:
             "stats": {"input_tokens": 5, "output_tokens": 1},
         }
         kind, text, usage = _parse_gemini_event(json.dumps(line))
-        assert kind == "error"
-        assert "Turn limit" in text
+        assert (kind, text) == ("fatal", "Turn limit")
         assert usage == {"input_tokens": 5, "output_tokens": 1}
 
     def test_warning_event(self):
@@ -574,10 +573,13 @@ class TestParseCodexEvent:
         assert kind == "tool_use"
         assert "Using m4.sql..." in text
 
+    def test_turn_failed_is_fatal(self):
+        line = {"type": "turn.failed", "error": {"message": "quota"}}
+        assert _parse_codex_event(json.dumps(line)) == ("fatal", "quota", None)
+
     @pytest.mark.parametrize(
         "line, expected",
         [
-            ({"type": "turn.failed", "error": {"message": "quota"}}, "Error: quota"),
             ({"type": "error", "message": "stream lost"}, "Error: stream lost"),
             (
                 {"type": "item.completed", "item": {"type": "error", "message": "x"}},
@@ -1385,6 +1387,37 @@ class TestRunAgent:
             )
         mock_popen.assert_not_called()
 
+    async def test_cli_exiting_before_reading_prompt_is_still_monitored(
+        self, mock_server, study_mgr, monkeypatch
+    ):
+        """A closed stdin pipe doesn't fail the request; the monitor reports it."""
+        import asyncio
+
+        info = await create_agent_card("report", "s1", mock_server)
+        monkeypatch.setattr("vitrine.dispatch.shutil.which", lambda b: f"/bin/{b}")
+        mock_proc = MagicMock(spec=subprocess.Popen)
+        mock_proc.pid = 42
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdin.write.side_effect = BrokenPipeError
+        mock_proc.stdin.close.side_effect = [BrokenPipeError, None]
+        mock_proc.stdout = MagicMock()
+        monkeypatch.setattr(
+            "vitrine.dispatch.subprocess.Popen", MagicMock(return_value=mock_proc)
+        )
+        monitored = []
+
+        def _record_monitor(coro):
+            monitored.append(coro)
+            coro.close()
+            return MagicMock(spec=asyncio.Task)
+
+        monkeypatch.setattr(asyncio, "create_task", _record_monitor)
+
+        result = await run_agent(info.card_id, mock_server, {"backend": "gemini"})
+
+        assert result.status == "running"
+        assert len(monitored) == 1
+
 
 # ---------------------------------------------------------------------------
 # _stream_monitor
@@ -1393,6 +1426,63 @@ class TestRunAgent:
 
 class TestStreamMonitor:
     """Test _stream_monitor output parsing and card finalization."""
+
+    async def test_fatal_result_fails_run_that_exits_zero(self, mock_server, study_mgr):
+        """A Gemini error result fails the card even when the CLI exits 0."""
+        _, store = study_mgr.get_or_create_study("s1")
+        store.store_card(
+            CardDescriptor(
+                card_id="mon-fatal",
+                card_type=CardType.AGENT,
+                title="Monitor Test",
+                study="s1",
+                preview={"status": "running", "output": ""},
+            )
+        )
+        study_mgr.register_card("mon-fatal", study_mgr._label_to_dir["s1"])
+        events = [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": "Partial",
+                "delta": True,
+            },
+            {
+                "type": "result",
+                "status": "error",
+                "error": {"type": "InvalidStream", "message": "Empty response"},
+                "stats": {"input_tokens": 7, "output_tokens": 2},
+            },
+        ]
+        line_iter = iter([(json.dumps(e) + "\n").encode() for e in events] + [b""])
+        mock_proc = MagicMock()
+        mock_proc.stdout.readline = lambda: next(line_iter)
+        mock_proc.wait.return_value = 0
+        mock_proc.poll.return_value = 0
+        info = DispatchInfo(
+            task="report",
+            study="s1",
+            card_id="mon-fatal",
+            status="running",
+            backend="gemini",
+            model="gemini-2.5-pro",
+            started_at="2025-01-01T00:00:00+00:00",
+        )
+        info.process = mock_proc
+
+        await _stream_monitor(info, mock_server)
+
+        assert info.status == "failed"
+        assert info.error == "Empty response"
+        card = store.list_cards()[0]
+        assert card.preview["status"] == "failed"
+        assert card.preview["output"].startswith("Partial")
+        assert card.preview["usage"]["input_tokens"] == 7
+        broadcast_types = [
+            c[0][0]["type"] for c in mock_server.broadcast.call_args_list
+        ]
+        assert "agent.failed" in broadcast_types
+        assert "agent.completed" not in broadcast_types
 
     async def test_successful_completion(self, mock_server, study_mgr):
         """Mocked stdout producing text + result → status=completed."""
