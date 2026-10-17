@@ -20,10 +20,12 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import uuid
-from collections.abc import Callable
+from collections import deque
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,6 +42,9 @@ _DISPATCH_TIMEOUT = 1800  # 30 minutes
 _UPDATE_INTERVAL = 0.5  # seconds between card updates (debounce)
 _SANDBOX_SUFFIX = "_reproduce"  # suffix for sandboxed output directory copies
 _MAX_CONCURRENT = 5  # global running agent limit
+# Non-JSON output (CLI usage errors, auth failures, crashes) kept for failed cards
+_DIAGNOSTIC_TAIL_LINES = 40
+_DIAGNOSTIC_LINE_CHARS = 500
 
 
 @dataclass
@@ -696,7 +701,7 @@ async def run_agent(
     if info.task == "reproduce":
         output_dir = server.study_manager.get_output_dir(info.study)
         if output_dir and output_dir.exists():
-            work_dir = _create_sandbox(output_dir)
+            work_dir = _create_sandbox(output_dir, info.card_id)
             info.extra["sandbox"] = str(work_dir)
     elif info.task in ("paper", "presentation"):
         # The skills write their deliverable relative to the workspace, so a
@@ -887,9 +892,13 @@ def _parse_stream_event(line: str) -> tuple[str, str, dict[str, Any] | None]:
     return ("ignore", "", None)
 
 
-def _create_sandbox(output_dir: Path) -> Path:
-    """Copy the study output directory into a sibling sandbox for safe execution."""
-    sandbox = output_dir.parent / (output_dir.name + _SANDBOX_SUFFIX)
+def _create_sandbox(output_dir: Path, run_id: str) -> Path:
+    """Copy the study output directory into a sibling sandbox for safe execution.
+
+    Each run gets its own ``<output_dir>_reproduce_<run_id>``, so a second run
+    on the same study never deletes a sandbox another run is still using.
+    """
+    sandbox = output_dir.parent / f"{output_dir.name}{_SANDBOX_SUFFIX}_{run_id}"
     if sandbox.exists():
         shutil.rmtree(sandbox)
     shutil.copytree(output_dir, sandbox)
@@ -940,6 +949,36 @@ def _cleanup_paper_workspace(paper_dir: Path, copied_items: list[str]) -> None:
     logger.info(f"Cleaned up paper workspace copies: {paper_dir}")
 
 
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def _diagnostic_line(raw: str) -> str | None:
+    """Return a non-JSON output line for the diagnostics tail, else None.
+
+    The child's stderr is merged into stdout, so these lines are where a CLI
+    reports usage errors, auth failures and crashes.
+    """
+    line = _ANSI_ESCAPE.sub("", raw).rstrip()
+    try:
+        json.loads(line)
+    except ValueError:
+        if len(line) > _DIAGNOSTIC_LINE_CHARS:
+            line = line[:_DIAGNOSTIC_LINE_CHARS] + "..."
+        return line
+    return None
+
+
+def _with_diagnostics(output: str, diagnostics: Iterable[str], source: str) -> str:
+    """Append the CLI's last non-JSON output lines to a failed card's output."""
+    text = "\n".join(diagnostics)
+    if not text.strip():
+        return output
+    # A fence longer than any backtick run in the text cannot be closed by it
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"{output}\n\n**Last output from {source}:**\n\n{fence}\n{text}\n{fence}"
+
+
 async def _stream_monitor(info: DispatchInfo, server: DispatchHost) -> None:
     """Parse stream-json events from the agent and update the card."""
     proc = info.process
@@ -951,6 +990,8 @@ async def _stream_monitor(info: DispatchInfo, server: DispatchHost) -> None:
     final_result: str | None = None
     # Set by a "fatal" event: the run failed even if the CLI exits 0
     fatal_error: str | None = None
+    # Last non-JSON lines, shown only if the run fails
+    diagnostics: deque[str] = deque(maxlen=_DIAGNOSTIC_TAIL_LINES)
     last_update = 0.0
     config = _TASK_CONFIG.get(info.task, ("", "", ""))
     _, card_title, _ = config
@@ -981,11 +1022,16 @@ async def _stream_monitor(info: DispatchInfo, server: DispatchHost) -> None:
             if not line_bytes:
                 break
 
-            line = line_bytes.decode(errors="replace").strip()
+            raw = line_bytes.decode(errors="replace")
+            line = raw.strip()
             if not line:
                 continue
 
             kind, text, event_usage = parse_event(line)
+            if kind == "ignore":
+                diagnostic = _diagnostic_line(raw)
+                if diagnostic is not None:
+                    diagnostics.append(diagnostic)
 
             if kind == "result":
                 final_result = text
@@ -1075,7 +1121,16 @@ async def _stream_monitor(info: DispatchInfo, server: DispatchHost) -> None:
         else:
             info.status = "failed"
             info.error = fatal_error or f"Process exited with code {returncode}"
-            error_output = accumulated + f"\n\n---\n**Error:** {info.error}"
+            if diagnostics:
+                logger.warning(
+                    f"Agent {info.card_id} failed ({info.error}); last CLI output:\n"
+                    + "\n".join(diagnostics)
+                )
+            error_output = _with_diagnostics(
+                accumulated + f"\n\n---\n**Error:** {info.error}",
+                diagnostics,
+                backend_cfg.display_name,
+            )
             await _update_agent_card(
                 info.card_id,
                 info.study,
@@ -1119,8 +1174,11 @@ async def _stream_monitor(info: DispatchInfo, server: DispatchHost) -> None:
             end_dt = datetime.fromisoformat(completed_at)
             duration = (end_dt - start_dt).total_seconds()
 
-        timeout_output = (
-            accumulated + f"\n\n---\n**Timed out** after {_DISPATCH_TIMEOUT}s"
+        # A CLI waiting for input (e.g. an interactive login) explains why here
+        timeout_output = _with_diagnostics(
+            accumulated + f"\n\n---\n**Timed out** after {_DISPATCH_TIMEOUT}s",
+            diagnostics,
+            backend_cfg.display_name,
         )
         await _update_agent_card(
             info.card_id,
@@ -1164,7 +1222,11 @@ async def _stream_monitor(info: DispatchInfo, server: DispatchHost) -> None:
                 server,
                 {
                     "status": "failed",
-                    "output": accumulated + f"\n\n---\n**Error:** {info.error}",
+                    "output": _with_diagnostics(
+                        accumulated + f"\n\n---\n**Error:** {info.error}",
+                        diagnostics,
+                        backend_cfg.display_name,
+                    ),
                     "completed_at": completed_at,
                     "duration": duration,
                     "error": info.error,

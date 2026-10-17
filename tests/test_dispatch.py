@@ -19,8 +19,8 @@ Tests cover:
 
 import json
 import os
-import sys
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -43,6 +43,7 @@ from vitrine.dispatch import (
     _parse_stream_event,
     _stream_monitor,
     _update_agent_card,
+    _with_diagnostics,
     build_prompt,
     cancel_agent,
     cleanup_dispatches,
@@ -1134,8 +1135,8 @@ class TestSandboxHelpers:
         (output_dir / "data").mkdir()
         (output_dir / "data" / "cohort.parquet").write_bytes(b"fake-parquet")
 
-        sandbox = _create_sandbox(output_dir)
-        assert sandbox.name == "study-output_reproduce"
+        sandbox = _create_sandbox(output_dir, "card1")
+        assert sandbox.name == "study-output_reproduce_card1"
         assert sandbox.exists()
         assert (sandbox / "scripts" / "01_cohort.py").exists()
         assert (sandbox / "scripts" / "01_cohort.py").read_text() == "print('hello')"
@@ -1146,14 +1147,34 @@ class TestSandboxHelpers:
         output_dir.mkdir()
         (output_dir / "file.txt").write_text("new")
 
-        sandbox = output_dir.parent / "study-output_reproduce"
+        sandbox = output_dir.parent / "study-output_reproduce_card1"
         sandbox.mkdir()
         (sandbox / "old_file.txt").write_text("old")
 
-        result = _create_sandbox(output_dir)
+        result = _create_sandbox(output_dir, "card1")
         assert result == sandbox
         assert not (sandbox / "old_file.txt").exists()
         assert (sandbox / "file.txt").read_text() == "new"
+
+    def test_runs_on_one_study_get_separate_sandboxes(self, tmp_path):
+        """A second run neither replaces nor shares the first run's sandbox."""
+        output_dir = tmp_path / "study-output"
+        output_dir.mkdir()
+        (output_dir / "file.txt").write_text("original")
+
+        first = _create_sandbox(output_dir, "card1")
+        (first / "result.txt").write_text("first run")
+        second = _create_sandbox(output_dir, "card2")
+
+        assert first != second
+        assert (first / "result.txt").read_text() == "first run"
+        assert not (second / "result.txt").exists()
+
+        _cleanup_sandbox(second)
+
+        assert not second.exists()
+        assert (first / "file.txt").read_text() == "original"
+        assert (first / "result.txt").read_text() == "first run"
 
     def test_cleanup_sandbox_removes_dir(self, tmp_path):
         sandbox = tmp_path / "sandbox"
@@ -1372,6 +1393,49 @@ class TestRunAgent:
         prompt = mock_proc.stdin.write.call_args.args[0].decode()
         assert str(workspace) in prompt
 
+    async def test_concurrent_reproduce_runs_get_their_own_sandboxes(
+        self, mock_server, study_mgr, monkeypatch
+    ):
+        """Two reproduce runs on one study each get a sandbox; cancelling one
+        leaves the other's sandbox in place. Both still run in the server's cwd."""
+        import asyncio
+
+        study_mgr.get_or_create_study("s1")
+        output_dir = study_mgr.register_output_dir("s1")
+        (output_dir / "scripts").mkdir()
+        (output_dir / "scripts" / "01_cohort.py").write_text("print('hello')")
+
+        monkeypatch.setattr(
+            "vitrine.dispatch.shutil.which", lambda _b: "/usr/local/bin/claude"
+        )
+        mock_popen = MagicMock(side_effect=lambda *a, **kw: MagicMock(pid=42))
+        monkeypatch.setattr("vitrine.dispatch.subprocess.Popen", mock_popen)
+
+        def _no_monitor(coro):
+            coro.close()
+            return MagicMock(spec=asyncio.Task)
+
+        monkeypatch.setattr(asyncio, "create_task", _no_monitor)
+
+        first = await create_agent_card("reproduce", "s1", mock_server)
+        second = await create_agent_card("reproduce", "s1", mock_server)
+        await run_agent(first.card_id, mock_server)
+        await run_agent(second.card_id, mock_server)
+
+        first_sandbox = Path(first.extra["sandbox"])
+        second_sandbox = Path(second.extra["sandbox"])
+        assert first_sandbox != second_sandbox
+        assert first_sandbox.name.endswith(first.card_id)
+        assert second_sandbox.name.endswith(second.card_id)
+        for call in mock_popen.call_args_list:
+            assert call.kwargs["cwd"] is None
+
+        await cancel_agent(first.card_id, mock_server)
+
+        assert not first_sandbox.exists()
+        assert (second_sandbox / "scripts" / "01_cohort.py").exists()
+        assert (output_dir / "scripts" / "01_cohort.py").exists()
+
     @pytest.mark.parametrize("backend", ["gemini", "codex"])
     async def test_max_turns_rejected_for_backends_without_limit(
         self, mock_server, study_mgr, monkeypatch, backend
@@ -1579,6 +1643,94 @@ class TestStreamMonitor:
             call[0][0]["type"] for call in mock_server.broadcast.call_args_list
         ]
         assert "agent.failed" in broadcast_types
+
+    @staticmethod
+    async def _monitor(mock_server, study_mgr, card_id, backend, lines, returncode):
+        """Run the monitor over a fake process that prints ``lines`` and exits."""
+        _, store = study_mgr.get_or_create_study("s1")
+        store.store_card(
+            CardDescriptor(
+                card_id=card_id,
+                card_type=CardType.AGENT,
+                title="Monitor Test",
+                study="s1",
+                preview={"status": "running", "output": ""},
+            )
+        )
+        study_mgr.register_card(card_id, study_mgr._label_to_dir["s1"])
+        line_iter = iter([(line + "\n").encode() for line in lines] + [b""])
+        mock_proc = MagicMock()
+        mock_proc.stdout.readline = lambda: next(line_iter)
+        mock_proc.wait.return_value = returncode
+        mock_proc.poll.return_value = returncode
+        info = DispatchInfo(
+            task="report",
+            study="s1",
+            card_id=card_id,
+            status="running",
+            backend=backend,
+            started_at="2025-01-01T00:00:00+00:00",
+        )
+        info.process = mock_proc
+        await _stream_monitor(info, mock_server)
+        card = next(c for c in store.list_cards() if c.card_id == card_id)
+        return info, card
+
+    async def test_failed_run_shows_cli_error_output(self, mock_server, study_mgr):
+        """A CLI that rejects its arguments and exits 2 shows why on the card."""
+        lines = [
+            json.dumps({"type": "thread.started", "thread_id": "t1"}),
+            "error: unexpected argument '--frobnicate' found",
+            "",
+            "Usage: codex exec [OPTIONS] [PROMPT]",
+        ]
+        info, card = await self._monitor(
+            mock_server, study_mgr, "mon-diag", "codex", lines, returncode=2
+        )
+
+        assert info.status == "failed"
+        assert info.error == "Process exited with code 2"
+        output = card.preview["output"]
+        assert "**Error:** Process exited with code 2" in output
+        assert (
+            "**Last output from Codex CLI:**\n\n```\n"
+            "error: unexpected argument '--frobnicate' found\n"
+            "Usage: codex exec [OPTIONS] [PROMPT]\n```"
+        ) in output
+        assert "thread.started" not in output
+        assert card.preview["error"] == "Process exited with code 2"
+
+    async def test_successful_run_hides_cli_output(self, mock_server, study_mgr):
+        lines = [
+            "Loaded cached credentials.",
+            json.dumps({"type": "message", "role": "assistant", "content": "Done."}),
+            json.dumps({"type": "result", "status": "success", "stats": {}}),
+        ]
+        info, card = await self._monitor(
+            mock_server, study_mgr, "mon-ok", "gemini", lines, returncode=0
+        )
+
+        assert info.status == "completed"
+        assert card.preview["output"] == "Done."
+
+    async def test_cli_output_tail_is_bounded(self, mock_server, study_mgr):
+        lines = [f"\x1b[31mtrace line {i}\x1b[0m" for i in range(100)]
+        _, card = await self._monitor(
+            mock_server, study_mgr, "mon-tail", "claude", lines, returncode=1
+        )
+
+        output = card.preview["output"]
+        assert "trace line 59\n" not in output
+        assert "trace line 60\n" in output
+        assert "trace line 99\n```" in output
+        assert "\x1b" not in output
+
+    def test_cli_output_fence_survives_backticks_in_output(self):
+        output = _with_diagnostics("Body", ["```", "``code``"], "Claude Code")
+        assert output.endswith("\n````\n```\n``code``\n````")
+
+    def test_no_cli_output_leaves_output_unchanged(self):
+        assert _with_diagnostics("Body", [], "Claude Code") == "Body"
 
 
 # ---------------------------------------------------------------------------
