@@ -560,6 +560,20 @@ class TestBuildContext:
         assert ctx["cards"][1]["title"] == "Card 2"
         assert ctx["cards"][0]["card_type"] == "markdown"
 
+    def test_sees_card_updates_after_listing_all_cards(self, manager):
+        """A response saved through the store shows up after cards were listed."""
+        from vitrine.renderer import render
+
+        _, store = manager.get_or_create_study("ctx-update")
+        card = render("Drop readmissions?", study="ctx-update", store=store)
+        assert [c.title for c in manager.list_all_cards()] == [card.title]
+
+        store.update_card(card.card_id, title="Renamed", response_action="confirm")
+
+        assert [c.title for c in manager.list_all_cards()] == ["Renamed"]
+        ctx = manager.build_context("ctx-update")
+        assert [d["action"] for d in ctx["decisions_made"]] == ["confirm"]
+
     def test_card_count_excludes_sections(self, manager):
         from vitrine._types import CardDescriptor, CardType
         from vitrine.renderer import _make_card_id, _make_timestamp, render
