@@ -16,6 +16,7 @@ dependencies = [
     "duckdb>=1.4.1",
     "starlette>=0.27.0",
     "uvicorn>=0.23.0",
+    "websockets>=12",
 ]
 
 [project.scripts]
@@ -55,3 +56,8 @@ known-first-party = ["vitrine"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    # uvicorn's websockets protocol imports websockets' deprecated legacy API.
+    "ignore:websockets.legacy is deprecated:DeprecationWarning",
+    "ignore:websockets.server.WebSocketServerProtocol is deprecated:DeprecationWarning",
+]
