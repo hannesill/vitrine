@@ -22,7 +22,6 @@ import logging
 import os
 import shutil
 import subprocess
-import tempfile
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -54,33 +53,12 @@ class BackendConfig:
     models: dict[str, str]  # {value: display_name}
     context_windows: dict[str, int]
     env_strip: list[str]  # env vars to strip from child process
-    # Returns (args, stdin_payload, temp_files_to_cleanup)
-    build_args: Callable[..., tuple[list[str], bytes | None, list[str]]] = None  # type: ignore[assignment]
+    # Returns (args, stdin_payload); every backend reads the prompt from stdin
+    # so it never has to fit on the command line.
+    build_args: Callable[..., tuple[list[str], bytes]] = None  # type: ignore[assignment]
     parse_event: Callable[[str], tuple[str, str, dict[str, Any] | None]] = None  # type: ignore[assignment]
-
-
-_PROMPT_FILE_THRESHOLD = 100_000  # bytes — use temp file above this
-
-
-def _prompt_as_arg_or_file(prompt: str) -> tuple[str, str | None]:
-    """Return (arg_value, tmp_path|None).
-
-    If the prompt is short enough for a positional CLI arg, returns
-    (prompt, None).  Otherwise writes it to a temp file and returns
-    (@file_path, file_path) so the caller can clean up the file later.
-    """
-    encoded = prompt.encode()
-    if len(encoded) <= _PROMPT_FILE_THRESHOLD:
-        return prompt, None
-    f = tempfile.NamedTemporaryFile(
-        mode="wb",
-        suffix=".md",
-        prefix="vitrine-prompt-",
-        delete=False,
-    )
-    f.write(encoded)
-    f.close()
-    return f"@{f.name}", f.name
+    # Whether the CLI can enforce the "Max turns" budget
+    supports_max_turns: bool = False
 
 
 def _build_claude_args(
@@ -89,7 +67,7 @@ def _build_claude_args(
     model: str,
     allowed_tools: str,
     budget: float | None,
-) -> tuple[list[str], bytes | None, list[str]]:
+) -> tuple[list[str], bytes]:
     """Build CLI args for Claude Code. Prompt is piped via stdin."""
     args = [
         binary,
@@ -106,7 +84,7 @@ def _build_claude_args(
         args.extend(["--model", model])
     if budget is not None:
         args.extend(["--max-turns", str(int(budget))])
-    return args, prompt.encode(), []
+    return args, prompt.encode()
 
 
 def _build_gemini_args(
@@ -115,8 +93,11 @@ def _build_gemini_args(
     model: str,
     allowed_tools: str,
     budget: float | None,
-) -> tuple[list[str], bytes | None, list[str]]:
-    """Build CLI args for Gemini CLI. Prompt is a positional arg."""
+) -> tuple[list[str], bytes]:
+    """Build CLI args for Gemini CLI. Prompt is piped via stdin.
+
+    Gemini runs headless when stdin is not a TTY and takes stdin as the prompt.
+    """
     args = [
         binary,
         "--approval-mode",
@@ -126,9 +107,7 @@ def _build_gemini_args(
     ]
     if model:
         args.extend(["--model", model])
-    prompt_arg, tmp_path = _prompt_as_arg_or_file(prompt)
-    args.append(prompt_arg)
-    return args, None, [tmp_path] if tmp_path else []
+    return args, prompt.encode()
 
 
 def _build_codex_args(
@@ -137,21 +116,26 @@ def _build_codex_args(
     model: str,
     allowed_tools: str,
     budget: float | None,
-) -> tuple[list[str], bytes | None, list[str]]:
-    """Build CLI args for Codex CLI. Prompt is a positional arg to exec."""
+) -> tuple[list[str], bytes]:
+    """Build CLI args for Codex CLI. Prompt is piped via stdin (``-``)."""
     args = [
         binary,
         "exec",
-        "--full-auto",
         "--sandbox",
         "danger-full-access",
+        # The agent may run outside a git repository (e.g. a study workspace)
+        "--skip-git-repo-check",
         "--json",
     ]
     if model:
         args.extend(["--model", model])
-    prompt_arg, tmp_path = _prompt_as_arg_or_file(prompt)
-    args.append(prompt_arg)
-    return args, None, [tmp_path] if tmp_path else []
+    args.append("-")
+    return args, prompt.encode()
+
+
+def _status_line(text: str) -> str:
+    """Format a tool call or warning between streamed agent text."""
+    return f"\n\n> *{text}*\n\n"
 
 
 def _parse_claude_event(line: str) -> tuple[str, str, dict[str, Any] | None]:
@@ -160,10 +144,12 @@ def _parse_claude_event(line: str) -> tuple[str, str, dict[str, Any] | None]:
 
 
 def _parse_gemini_event(line: str) -> tuple[str, str, dict[str, Any] | None]:
-    """Parse a Gemini CLI stream-json line.
+    """Parse a Gemini CLI ``--output-format stream-json`` line.
 
-    Based on documented Gemini CLI output format. May need tuning
-    once tested against actual CLI output.
+    Event types: ``init``, ``message`` (``role`` user or assistant, ``content``,
+    ``delta``), ``tool_use``, ``tool_result``, ``error`` (non-fatal, with
+    ``severity``) and ``result`` (``status``, ``error``, ``stats``). The
+    response text arrives only as assistant messages, never in ``result``.
     """
     try:
         obj = json.loads(line)
@@ -172,35 +158,45 @@ def _parse_gemini_event(line: str) -> tuple[str, str, dict[str, Any] | None]:
 
     evt_type = obj.get("type", "")
 
-    if evt_type == "text":
+    # The first message echoes the whole prompt back with role "user"
+    if evt_type == "message" and obj.get("role") == "assistant":
         return ("text", obj.get("content", ""), None)
 
-    if evt_type == "tool_call":
-        name = obj.get("name", "?")
-        return ("tool_use", f"\n\n> *Using {name}...*\n\n", None)
-
-    if evt_type == "result":
-        usage_data = None
-        usage = obj.get("usage", {})
-        if usage:
-            usage_data = {
-                "input_tokens": usage.get("input_tokens", 0),
-                "output_tokens": usage.get("output_tokens", 0),
-                "cost_usd": usage.get("cost_usd"),
-            }
-        return ("result", obj.get("text", obj.get("result", "")), usage_data)
+    if evt_type == "tool_use":
+        return ("tool_use", _status_line(f"Using {obj.get('tool_name', '?')}..."), None)
 
     if evt_type == "error":
-        return ("error", obj.get("message", "Unknown error"), None)
+        severity = str(obj.get("severity", "error")).capitalize()
+        message = obj.get("message", "Unknown error")
+        return ("error", _status_line(f"{severity}: {message}"), None)
+
+    if evt_type == "result":
+        stats = obj.get("stats") or {}
+        # input_tokens already includes cached tokens
+        usage_data = (
+            {
+                "input_tokens": stats.get("input_tokens", 0),
+                "output_tokens": stats.get("output_tokens", 0),
+            }
+            if stats
+            else None
+        )
+        if obj.get("status") == "error":
+            message = (obj.get("error") or {}).get("message", "Unknown error")
+            return ("error", _status_line(f"Error: {message}"), usage_data)
+        return ("result", "", usage_data)
 
     return ("ignore", "", None)
 
 
 def _parse_codex_event(line: str) -> tuple[str, str, dict[str, Any] | None]:
-    """Parse a Codex CLI JSON output line.
+    """Parse a ``codex exec --json`` line.
 
-    Based on documented Codex CLI output format. May need tuning
-    once tested against actual CLI output.
+    Event types: ``thread.started``, ``turn.started``, ``item.started``,
+    ``item.updated``, ``item.completed``, ``turn.completed`` (with ``usage``),
+    ``turn.failed`` and ``error``. Items carry a ``type`` such as
+    ``agent_message``, ``reasoning``, ``command_execution``, ``file_change``,
+    ``mcp_tool_call``, ``web_search``, ``todo_list`` or ``error``.
     """
     try:
         obj = json.loads(line)
@@ -208,31 +204,46 @@ def _parse_codex_event(line: str) -> tuple[str, str, dict[str, Any] | None]:
         return ("ignore", "", None)
 
     evt_type = obj.get("type", "")
+    item = obj.get("item") or {}
+    item_type = item.get("type", "")
 
-    if evt_type == "message":
-        content = obj.get("content", "")
-        if isinstance(content, list):
-            parts = [b.get("text", "") for b in content if b.get("type") == "text"]
-            return ("text", "".join(parts), None)
-        return ("text", str(content), None)
+    if evt_type == "item.started":
+        if item_type == "command_execution":
+            cmd = item.get("command", "")
+            short = cmd[:80] + ("..." if len(cmd) > 80 else "")
+            return ("tool_use", _status_line(f"Running `{short}`..."), None)
+        if item_type == "mcp_tool_call":
+            name = f"{item.get('server', '?')}.{item.get('tool', '?')}"
+            return ("tool_use", _status_line(f"Using {name}..."), None)
 
-    if evt_type == "function_call":
-        name = obj.get("name", "?")
-        return ("tool_use", f"\n\n> *Using {name}...*\n\n", None)
+    if evt_type == "item.completed":
+        if item_type == "agent_message":
+            return ("text", item.get("text", "") + "\n\n", None)
+        if item_type == "file_change":
+            paths = ", ".join(
+                f"`{Path(c.get('path', '?')).name}`" for c in item.get("changes", [])
+            )
+            return ("tool_use", _status_line(f"Changed {paths}"), None)
+        if item_type == "error":
+            message = item.get("message", "Unknown error")
+            return ("error", _status_line(f"Warning: {message}"), None)
 
-    if evt_type in ("result", "completed"):
-        usage_data = None
-        usage = obj.get("usage", {})
-        if usage:
-            usage_data = {
-                "input_tokens": usage.get("input_tokens", 0),
-                "output_tokens": usage.get("output_tokens", 0),
-                "cost_usd": usage.get("cost_usd"),
-            }
-        return ("result", obj.get("output", obj.get("result", "")), usage_data)
+    if evt_type == "turn.completed":
+        usage = obj.get("usage") or {}
+        # input_tokens already includes cached_input_tokens
+        usage_data = {
+            "input_tokens": usage.get("input_tokens", 0),
+            "output_tokens": usage.get("output_tokens", 0),
+        }
+        return ("result", "", usage_data)
+
+    if evt_type == "turn.failed":
+        message = (obj.get("error") or {}).get("message", "Unknown error")
+        return ("error", _status_line(f"Error: {message}"), None)
 
     if evt_type == "error":
-        return ("error", obj.get("message", "Unknown error"), None)
+        message = obj.get("message", "Unknown error")
+        return ("error", _status_line(f"Error: {message}"), None)
 
     return ("ignore", "", None)
 
@@ -256,6 +267,7 @@ _BACKENDS: dict[str, BackendConfig] = {
         env_strip=["CLAUDECODE"],
         build_args=_build_claude_args,
         parse_event=_parse_claude_event,
+        supports_max_turns=True,
     ),
     "gemini": BackendConfig(
         name="gemini",
@@ -664,6 +676,11 @@ async def run_agent(
         raise ValueError(
             f"{backend_cfg.display_name} CLI ({backend_cfg.binary!r}) not found in PATH."
         )
+    if info.budget is not None and not backend_cfg.supports_max_turns:
+        raise ValueError(
+            f"{backend_cfg.display_name} cannot limit the number of turns; "
+            "leave Max turns empty."
+        )
 
     task_config = _TASK_CONFIG.get(info.task)
     if task_config is None:
@@ -698,11 +715,9 @@ async def run_agent(
     )
 
     # Build CLI args using the backend's arg builder
-    cli_args, stdin_payload, tmp_files = backend_cfg.build_args(
+    cli_args, stdin_payload = backend_cfg.build_args(
         binary_path, prompt, info.model, allowed_tools, info.budget
     )
-    if tmp_files:
-        info.extra["prompt_tmp_files"] = tmp_files
 
     # Strip backend-specific env vars from child process
     env = {k: v for k, v in os.environ.items() if k not in backend_cfg.env_strip}
@@ -1146,11 +1161,6 @@ async def _stream_monitor(info: DispatchInfo, server: DispatchHost) -> None:
         sandbox = info.extra.get("sandbox")
         if sandbox:
             _cleanup_sandbox(Path(sandbox))
-        for tmp in info.extra.get("prompt_tmp_files", []):
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
 
 
 async def cancel_agent(card_id: str, server: DispatchHost) -> bool:
@@ -1186,11 +1196,6 @@ async def cancel_agent(card_id: str, server: DispatchHost) -> bool:
     sandbox = info.extra.get("sandbox")
     if sandbox:
         _cleanup_sandbox(Path(sandbox))
-    for tmp in info.extra.get("prompt_tmp_files", []):
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
 
     config = _TASK_CONFIG.get(info.task, ("", "", ""))
     _, card_title, _ = config
@@ -1287,11 +1292,6 @@ def cleanup_dispatches(server: DispatchHost) -> None:
         sandbox = info.extra.get("sandbox")
         if sandbox:
             _cleanup_sandbox(Path(sandbox))
-        for tmp in info.extra.get("prompt_tmp_files", []):
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
     server.dispatches.clear()
 
 
