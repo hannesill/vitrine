@@ -23,7 +23,7 @@ from vitrine import study_context, register_output_dir, show, list_annotations
 import pandas as pd
 from pathlib import Path
 
-STUDY = "<study-label>"  # provided as context when dispatched
+STUDY = "<study-label>"  # the study label given with this task
 output_dir = register_output_dir(study=STUDY)
 ```
 

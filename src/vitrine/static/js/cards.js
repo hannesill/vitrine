@@ -1,43 +1,6 @@
 'use strict';
 
 // ================================================================
-// MODEL DISPLAY NAMES
-// ================================================================
-// max_turns mirrors BackendConfig.supports_max_turns in dispatch.py
-var BACKENDS = {
-  claude: { display_name: 'Claude Code', models: { sonnet: 'Sonnet 4.5', opus: 'Opus 4.6', haiku: 'Haiku 4.5' }, default_model: 'sonnet', max_turns: true },
-  gemini: { display_name: 'Gemini CLI', models: { 'gemini-2.5-pro': '2.5 Pro', 'gemini-2.5-flash': '2.5 Flash' }, default_model: 'gemini-2.5-pro', max_turns: false },
-  codex:  { display_name: 'Codex CLI', models: { 'gpt-5-codex': 'GPT-5 Codex' }, default_model: 'gpt-5-codex', max_turns: false }
-};
-
-function getModelDisplay(model, backend) {
-  var b = BACKENDS[backend || 'claude'];
-  if (b && b.models[model]) return b.models[model];
-  // Fallback: search all backends
-  for (var key in BACKENDS) {
-    if (BACKENDS[key].models[model]) return BACKENDS[key].models[model];
-  }
-  return model || '';
-}
-
-var AGENT_THINKING_MESSAGES = [
-  'Accomplishing', 'Actioning', 'Actualizing', 'Annotating', 'Auditing',
-  'Baking', 'Bootstrapping', 'Brewing', 'Calculating', 'Calibrating',
-  'Cerebrating', 'Charting', 'Churning', 'Clauding', 'Coalescing',
-  'Cogitating', 'Computing', 'Conjuring', 'Considering', 'Cooking',
-  'Correlating', 'Crafting', 'Creating', 'Crunching', 'Curating',
-  'Deliberating', 'Determining', 'Doing', 'Effecting', 'Finagling',
-  'Forging', 'Forming', 'Generating', 'Hatching', 'Herding', 'Honking',
-  'Hustling', 'Hypothesizing', 'Ideating', 'Incubating', 'Inferring',
-  'Manifesting', 'Marinating', 'Moseying', 'Mulling', 'Mustering',
-  'Musing', 'Noodling', 'Percolating', 'Pipetting', 'Pondering',
-  'Processing', 'Puttering', 'Reticulating', 'Ruminating', 'Schlepping',
-  'Shucking', 'Simmering', 'Smooshing', 'Spinning', 'Stewing',
-  'Stratifying', 'Synthesizing', 'Thinking', 'Titrating', 'Transmuting',
-  'Triaging', 'Vibing', 'Working'
-];
-
-// ================================================================
 // CARD RENDERING — addCard, updateCard, toast
 // ================================================================
 function addCard(cardData) {
@@ -108,23 +71,14 @@ function addCard(cardData) {
   typeIcon.textContent = TYPE_LETTERS[headerType] || '?';
   header.appendChild(typeIcon);
 
-  // Agent status indicator (pulsing dot for running, checkmark/X for done)
+  // Agent status mark (completed or failed run)
   if (cardData.card_type === 'agent' && cardData.preview) {
-    var agentStatus = cardData.preview.status || 'pending';
-    if (agentStatus === 'running') {
-      var dot = document.createElement('span');
-      dot.className = 'agent-status-dot running';
-      header.appendChild(dot);
-    } else if (agentStatus === 'completed') {
-      var check = document.createElement('span');
-      check.className = 'agent-status-dot completed';
-      check.textContent = '\u2713';
-      header.appendChild(check);
-    } else if (agentStatus === 'failed') {
-      var xmark = document.createElement('span');
-      xmark.className = 'agent-status-dot failed';
-      xmark.textContent = '\u2717';
-      header.appendChild(xmark);
+    var agentStatus = cardData.preview.status;
+    if (agentStatus === 'completed' || agentStatus === 'failed') {
+      var statusMark = document.createElement('span');
+      statusMark.className = 'agent-status-dot ' + agentStatus;
+      statusMark.textContent = agentStatus === 'completed' ? '\u2713' : '\u2717';
+      header.appendChild(statusMark);
     }
   }
 
@@ -138,37 +92,20 @@ function addCard(cardData) {
   });
   header.appendChild(title);
 
-  // Model badge (agent cards only)
-  if (cardData.card_type === 'agent' && cardData.preview) {
-    var modelBadge = document.createElement('span');
-    modelBadge.className = 'agent-model-badge agent-header-badge';
-    modelBadge.textContent = getModelDisplay(cardData.preview.model, cardData.preview.backend);
-    if (modelBadge.textContent) header.appendChild(modelBadge);
-
-    // Status reason badge for failed/cancelled agents
-    if (cardData.preview.status === 'failed' && cardData.preview.error) {
-      var reasonBadge = document.createElement('span');
-      reasonBadge.className = 'agent-reason-badge';
-      reasonBadge.textContent = cardData.preview.error;
-      header.appendChild(reasonBadge);
-    }
+  // Failure reason (agent cards only)
+  if (cardData.card_type === 'agent' && cardData.preview
+      && cardData.preview.status === 'failed' && cardData.preview.error) {
+    var reasonBadge = document.createElement('span');
+    reasonBadge.className = 'agent-reason-badge';
+    reasonBadge.textContent = cardData.preview.error;
+    header.appendChild(reasonBadge);
   }
 
-  // Timestamp / duration / live timer
+  // Timestamp, or run duration for agent cards
   var meta = document.createElement('span');
   meta.className = 'card-meta';
-  if (cardData.card_type === 'agent' && cardData.preview) {
-    var agentPreview = cardData.preview;
-    if (agentPreview.status === 'running' && agentPreview.started_at) {
-      // Live timer
-      meta.textContent = formatElapsed(agentPreview.started_at);
-      var timerId = setInterval(function() {
-        meta.textContent = formatElapsed(agentPreview.started_at);
-      }, 1000);
-      el._agentTimer = timerId;
-    } else if (agentPreview.duration != null) {
-      meta.textContent = formatAgentDuration(agentPreview.duration);
-    }
+  if (cardData.card_type === 'agent' && cardData.preview && cardData.preview.duration != null) {
+    meta.textContent = formatAgentDuration(cardData.preview.duration);
   } else if (cardData.timestamp) {
     meta.textContent = new Date(cardData.timestamp).toLocaleTimeString();
   }
@@ -601,190 +538,44 @@ function updateCard(cardId, newCardData) {
         typeIcon.setAttribute('data-type', headerType);
         typeIcon.textContent = newCardData.response_action ? '\u2713' : (TYPE_LETTERS[headerType] || '?');
       }
-
-      // Update agent status indicator in header
-      if (newCardData.card_type === 'agent' && newCardData.preview) {
-        var oldDot = header.querySelector('.agent-status-dot');
-        if (oldDot) oldDot.remove();
-        var agentSt = newCardData.preview.status || 'pending';
-        if (agentSt === 'running') {
-          var dot = document.createElement('span');
-          dot.className = 'agent-status-dot running';
-          if (typeIcon) typeIcon.insertAdjacentElement('afterend', dot);
-        } else if (agentSt === 'completed') {
-          var chk = document.createElement('span');
-          chk.className = 'agent-status-dot completed';
-          chk.textContent = '\u2713';
-          if (typeIcon) typeIcon.insertAdjacentElement('afterend', chk);
-        } else if (agentSt === 'failed') {
-          var xm = document.createElement('span');
-          xm.className = 'agent-status-dot failed';
-          xm.textContent = '\u2717';
-          if (typeIcon) typeIcon.insertAdjacentElement('afterend', xm);
-        }
-
-        // Update duration/timer in meta
-        var meta = header.querySelector('.card-meta');
-        if (meta) {
-          var st = newCardData.preview.status || 'pending';
-          if (st === 'running' && newCardData.preview.started_at && !el._agentTimer) {
-            meta.textContent = formatElapsed(newCardData.preview.started_at);
-            el._agentTimer = setInterval(function() {
-              meta.textContent = formatElapsed(newCardData.preview.started_at);
-            }, 1000);
-          } else if (st !== 'running' && newCardData.preview.duration != null) {
-            if (el._agentTimer) {
-              clearInterval(el._agentTimer);
-              el._agentTimer = null;
-            }
-            meta.textContent = formatAgentDuration(newCardData.preview.duration);
-          }
-        }
-
-        // Update or add model badge in header
-        var existingModelBadge = header.querySelector('.agent-header-badge');
-        if (newCardData.preview.model) {
-          if (existingModelBadge) {
-            existingModelBadge.textContent = getModelDisplay(newCardData.preview.model, newCardData.preview.backend);
-          } else {
-            var mb = document.createElement('span');
-            mb.className = 'agent-model-badge agent-header-badge';
-            mb.textContent = getModelDisplay(newCardData.preview.model, newCardData.preview.backend);
-            var titleAfter = header.querySelector('.card-title');
-            if (titleAfter) titleAfter.insertAdjacentElement('afterend', mb);
-          }
-        }
-
-        // Update or add/remove status reason badge
-        var existingReason = header.querySelector('.agent-reason-badge');
-        if (newCardData.preview.status === 'failed' && newCardData.preview.error) {
-          if (existingReason) {
-            existingReason.textContent = newCardData.preview.error;
-          } else {
-            var rb = document.createElement('span');
-            rb.className = 'agent-reason-badge';
-            rb.textContent = newCardData.preview.error;
-            // Insert after model badge or after title
-            var anchor = header.querySelector('.agent-header-badge') || header.querySelector('.card-title');
-            if (anchor) anchor.insertAdjacentElement('afterend', rb);
-          }
-        } else if (existingReason) {
-          existingReason.remove();
-        }
-
-        // Remove any legacy usage badge from header
-        var existingUsage = header.querySelector('.agent-usage-badge');
-        if (existingUsage) existingUsage.remove();
-      }
     }
 
     // Re-render body content
     var body = el.querySelector('.card-body');
     if (body) {
-      // Agent cards: incremental updates to avoid jitter
-      if (newCardData.card_type === 'agent' && newCardData.preview) {
-        var newStatus = newCardData.preview.status || 'pending';
-        // Detect current rendered state
-        var currentState = 'pending';
-        if (body.querySelector('.agent-terminal:not(.agent-terminal-compact)') || body.querySelector('.agent-meta-strip')) currentState = 'running';
-        else if (body.querySelector('.agent-terminal-compact')) currentState = 'completed';
-        else if (body.querySelector('.agent-config')) currentState = 'pending';
-
-        if (currentState === newStatus && newStatus === 'running') {
-          // Incremental: just update the terminal content markdown
-          var termContent = body.querySelector('.agent-terminal-content');
-          if (termContent && newCardData.preview.output) {
-            if (typeof marked !== 'undefined') {
-              termContent.innerHTML = marked.parse(newCardData.preview.output);
-            } else {
-              termContent.textContent = newCardData.preview.output;
-            }
-            // Auto-scroll terminal to bottom
-            var termBox = body.querySelector('.agent-terminal');
-            if (termBox) {
-              requestAnimationFrame(function() { termBox.scrollTop = termBox.scrollHeight; });
-            }
+      body.innerHTML = '';
+      switch (newCardData.card_type) {
+        case 'table':
+          renderTable(body, newCardData);
+          break;
+        case 'plotly':
+          renderPlotly(body, newCardData);
+          break;
+        case 'image':
+          renderImage(body, newCardData);
+          break;
+        case 'markdown':
+          if (newCardData.preview && newCardData.preview.fields) {
+            renderForm(body, newCardData);
+          } else {
+            renderMarkdown(body, newCardData);
           }
-          // Update usage info in alive strip
-          var aliveUsage = body.querySelector('.agent-alive-usage');
-          if (aliveUsage) {
-            aliveUsage.textContent = formatAgentUsage(newCardData.preview);
+          break;
+        case 'keyvalue':
+          renderKeyValue(body, newCardData);
+          break;
+        case 'decision':
+          if (newCardData.response_action && newCardData.response_values && Object.keys(newCardData.response_values).length > 0) {
+            renderFrozenForm(body, newCardData.response_values, (newCardData.preview && newCardData.preview.fields) || []);
+          } else {
+            renderForm(body, newCardData);
           }
-        } else if (currentState !== newStatus) {
-          // State transition: clear timers + full re-render
-          if (el._agentTimer) {
-            clearInterval(el._agentTimer);
-            el._agentTimer = null;
-          }
-          if (el._agentInactivityTimer) {
-            clearInterval(el._agentInactivityTimer);
-            el._agentInactivityTimer = null;
-          }
-          body.innerHTML = '';
+          break;
+        case 'agent':
           renderAgentCard(body, newCardData);
-
-          // Update header badges for new state
-          var hdr = el.querySelector('.card-header');
-          if (hdr) {
-            // Update model badge
-            var existingBadge = hdr.querySelector('.agent-header-badge');
-            if (!existingBadge && newCardData.preview.model) {
-              var mb = document.createElement('span');
-              mb.className = 'agent-model-badge agent-header-badge';
-              mb.textContent = getModelDisplay(newCardData.preview.model, newCardData.preview.backend);
-              var titleEl2 = hdr.querySelector('.card-title');
-              if (titleEl2) titleEl2.insertAdjacentElement('afterend', mb);
-            }
-            // Update meta (duration or timer)
-            var metaEl = hdr.querySelector('.card-meta');
-            if (metaEl) {
-              if (newStatus === 'running' && newCardData.preview.started_at) {
-                metaEl.textContent = formatElapsed(newCardData.preview.started_at);
-                el._agentTimer = setInterval(function() {
-                  metaEl.textContent = formatElapsed(newCardData.preview.started_at);
-                }, 1000);
-              } else if (newCardData.preview.duration != null) {
-                metaEl.textContent = formatAgentDuration(newCardData.preview.duration);
-              }
-            }
-          }
-        }
-        // Same state (pending/completed/failed): no re-render needed
-      } else {
-        body.innerHTML = '';
-        switch (newCardData.card_type) {
-          case 'table':
-            renderTable(body, newCardData);
-            break;
-          case 'plotly':
-            renderPlotly(body, newCardData);
-            break;
-          case 'image':
-            renderImage(body, newCardData);
-            break;
-          case 'markdown':
-            if (newCardData.preview && newCardData.preview.fields) {
-              renderForm(body, newCardData);
-            } else {
-              renderMarkdown(body, newCardData);
-            }
-            break;
-          case 'keyvalue':
-            renderKeyValue(body, newCardData);
-            break;
-          case 'decision':
-            if (newCardData.response_action && newCardData.response_values && Object.keys(newCardData.response_values).length > 0) {
-              renderFrozenForm(body, newCardData.response_values, (newCardData.preview && newCardData.preview.fields) || []);
-            } else {
-              renderForm(body, newCardData);
-            }
-            break;
-          case 'agent':
-            renderAgentCard(body, newCardData);
-            break;
-          default:
-            body.textContent = JSON.stringify(newCardData.preview);
-        }
+          break;
+        default:
+          body.textContent = JSON.stringify(newCardData.preview);
       }
     }
   }
@@ -920,12 +711,10 @@ function updateCard(cardId, newCardData) {
   }
 
   // Flash animation to highlight the update (skip during other animations)
-  var isRunningAgent = newCardData && newCardData.card_type === 'agent'
-    && newCardData.preview && newCardData.preview.status === 'running';
   var isAnimating = el.classList.contains('card-deleting') || el.classList.contains('card-restoring')
     || el.classList.contains('card-dismissing') || el.classList.contains('card-undismissing')
     || el.classList.contains('hidden-by-delete');
-  if (!isRunningAgent && !isAnimating) {
+  if (!isAnimating) {
     el.classList.remove('flash');
     void el.offsetWidth; // Force reflow
     el.classList.add('flash');
@@ -1222,345 +1011,16 @@ function hideUndoSnackbar() {
 // ================================================================
 // AGENT CARD RENDERING
 // ================================================================
+// Agent cards record runs of the agent runner that earlier versions built
+// into the board. They are read-only: the run's output and its usage.
 function renderAgentCard(container, cardData) {
   var preview = cardData.preview || {};
-  var status = preview.status || 'pending';
+  var outputText = preview.output || '';
+  if (preview.status !== 'completed' && preview.status !== 'failed') {
+    outputText += (outputText ? '\n\n---\n' : '') + '*This agent run did not finish.*';
+  }
 
   container.innerHTML = '';
-
-  if (status === 'pending') {
-    renderAgentConfigForm(container, cardData);
-  } else if (status === 'running') {
-    renderAgentRunning(container, cardData);
-  } else {
-    // completed or failed
-    renderAgentCompleted(container, cardData);
-  }
-}
-
-function renderAgentConfigForm(container, cardData) {
-  var preview = cardData.preview || {};
-  var form = document.createElement('div');
-  form.className = 'agent-config';
-
-  // Backend selector
-  var backendRow = document.createElement('div');
-  backendRow.className = 'agent-config-row';
-  var backendLabel = document.createElement('label');
-  backendLabel.className = 'agent-config-label';
-  backendLabel.textContent = 'Backend';
-  backendRow.appendChild(backendLabel);
-  var backendSelect = document.createElement('select');
-  backendSelect.className = 'agent-config-select';
-  Object.keys(BACKENDS).forEach(function(b) {
-    var opt = document.createElement('option');
-    opt.value = b;
-    opt.textContent = BACKENDS[b].display_name;
-    if (b === (preview.backend || 'claude')) opt.selected = true;
-    backendSelect.appendChild(opt);
-  });
-  backendRow.appendChild(backendSelect);
-  form.appendChild(backendRow);
-
-  // Model selector (populated dynamically based on backend)
-  var modelRow = document.createElement('div');
-  modelRow.className = 'agent-config-row';
-  var modelLabel = document.createElement('label');
-  modelLabel.className = 'agent-config-label';
-  modelLabel.textContent = 'Model';
-  modelRow.appendChild(modelLabel);
-  var modelSelect = document.createElement('select');
-  modelSelect.className = 'agent-config-select';
-
-  function populateModels(backendName, selectedModel) {
-    modelSelect.innerHTML = '';
-    var b = BACKENDS[backendName] || BACKENDS.claude;
-    var models = b.models;
-    var defaultModel = selectedModel || b.default_model;
-    Object.keys(models).forEach(function(m) {
-      var opt = document.createElement('option');
-      opt.value = m;
-      opt.textContent = models[m];
-      if (m === defaultModel) opt.selected = true;
-      modelSelect.appendChild(opt);
-    });
-  }
-  populateModels(preview.backend || 'claude', preview.model);
-
-  backendSelect.addEventListener('change', function() {
-    populateModels(backendSelect.value, null);
-  });
-
-  modelRow.appendChild(modelSelect);
-  form.appendChild(modelRow);
-
-  // Tools (read-only)
-  var toolsRow = document.createElement('div');
-  toolsRow.className = 'agent-config-row';
-  var toolsLabel = document.createElement('label');
-  toolsLabel.className = 'agent-config-label';
-  toolsLabel.textContent = 'Tools';
-  toolsRow.appendChild(toolsLabel);
-  var toolsText = document.createElement('span');
-  toolsText.className = 'agent-config-value';
-  toolsText.textContent = (preview.tools || []).join(', ');
-  toolsRow.appendChild(toolsText);
-  form.appendChild(toolsRow);
-
-  // Permissions warning
-  var permsRow = document.createElement('div');
-  permsRow.className = 'agent-config-row';
-  var permsLabel = document.createElement('label');
-  permsLabel.className = 'agent-config-label';
-  permsLabel.textContent = 'Perms';
-  permsRow.appendChild(permsLabel);
-  var permsBadge = document.createElement('span');
-  permsBadge.className = 'agent-perms-badge';
-  permsBadge.textContent = 'Autonomous';
-  permsRow.appendChild(permsBadge);
-  form.appendChild(permsRow);
-
-  // Budget (optional)
-  var budgetRow = document.createElement('div');
-  budgetRow.className = 'agent-config-row';
-  var budgetLabel = document.createElement('label');
-  budgetLabel.className = 'agent-config-label';
-  budgetLabel.textContent = 'Max turns';
-  budgetRow.appendChild(budgetLabel);
-  var budgetInput = document.createElement('input');
-  budgetInput.type = 'number';
-  budgetInput.className = 'agent-config-input';
-  budgetInput.placeholder = 'unlimited';
-  budgetInput.min = '1';
-  if (preview.budget) budgetInput.value = preview.budget;
-  budgetRow.appendChild(budgetInput);
-  form.appendChild(budgetRow);
-
-  // Only Claude Code can enforce a turn limit
-  function backendLimitsTurns() {
-    var b = BACKENDS[backendSelect.value];
-    return !!(b && b.max_turns);
-  }
-  function syncBudgetRow() {
-    budgetRow.style.display = backendLimitsTurns() ? '' : 'none';
-  }
-  syncBudgetRow();
-  backendSelect.addEventListener('change', syncBudgetRow);
-
-  // Additional instructions
-  var instrRow = document.createElement('div');
-  instrRow.className = 'agent-config-row agent-config-row-full';
-  var instrLabel = document.createElement('label');
-  instrLabel.className = 'agent-config-label';
-  instrLabel.textContent = 'Additional instructions';
-  instrRow.appendChild(instrLabel);
-  var instrTextarea = document.createElement('textarea');
-  instrTextarea.className = 'agent-config-textarea';
-  instrTextarea.placeholder = 'Extra instructions for the agent...';
-  instrTextarea.rows = 3;
-  instrTextarea.value = preview.additional_prompt || '';
-  instrRow.appendChild(instrTextarea);
-  form.appendChild(instrRow);
-
-  // Advanced toggle (view full prompt)
-  var advToggle = document.createElement('details');
-  advToggle.className = 'agent-advanced-toggle';
-  var advSummary = document.createElement('summary');
-  advSummary.textContent = 'Advanced (view full prompt)';
-  advToggle.appendChild(advSummary);
-  var advContent = document.createElement('pre');
-  advContent.className = 'agent-prompt-preview';
-  advContent.textContent = preview.full_prompt || preview.prompt_preview || '';
-  advToggle.appendChild(advContent);
-  form.appendChild(advToggle);
-
-  container.appendChild(form);
-
-  // Bottom bar with Run button
-  var bottomBar = document.createElement('div');
-  bottomBar.className = 'agent-bottom-bar';
-  var runBtn = document.createElement('button');
-  runBtn.className = 'response-btn response-btn-confirm agent-run-btn';
-  runBtn.textContent = 'Run Agent';
-  runBtn.onclick = function() {
-    runBtn.disabled = true;
-    runBtn.textContent = 'Starting...';
-    var config = {
-      backend: backendSelect.value,
-      model: modelSelect.value,
-      additional_prompt: instrTextarea.value.trim()
-    };
-    // Always send budget so a value from an earlier attempt is cleared
-    var budgetVal = budgetInput.value.trim();
-    config.budget = budgetVal && backendLimitsTurns() ? parseFloat(budgetVal) : null;
-    fetch('/api/agents/' + encodeURIComponent(cardData.card_id) + '/run', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(config)
-    })
-      .then(function(r) {
-        if (!r.ok) return r.text().then(function(t) { try { var d = JSON.parse(t); throw new Error(d.error || 'Failed'); } catch(e) { if (e instanceof SyntaxError) throw new Error('Server returned ' + r.status); throw e; } });
-        return r.json();
-      })
-      .then(function() {
-        showToast('Agent started');
-      })
-      .catch(function(err) {
-        showToast(err.message || 'Failed to start agent', 'error');
-        runBtn.disabled = false;
-        runBtn.textContent = 'Run Agent';
-      });
-  };
-  bottomBar.appendChild(runBtn);
-  container.appendChild(bottomBar);
-}
-
-function renderAgentRunning(container, cardData) {
-  var preview = cardData.preview || {};
-
-  // Metadata strip
-  var strip = document.createElement('div');
-  strip.className = 'agent-meta-strip';
-
-  var modelBadge = document.createElement('span');
-  modelBadge.className = 'agent-model-badge';
-  modelBadge.textContent = getModelDisplay(preview.model, preview.backend);
-  strip.appendChild(modelBadge);
-
-  var permsBadge = document.createElement('span');
-  permsBadge.className = 'agent-perms-badge-sm';
-  permsBadge.textContent = 'Autonomous';
-  strip.appendChild(permsBadge);
-
-  if (preview.tools && preview.tools.length > 0) {
-    var toolsList = document.createElement('span');
-    toolsList.className = 'agent-tools-list';
-    toolsList.textContent = preview.tools.join(', ');
-    strip.appendChild(toolsList);
-  }
-
-  container.appendChild(strip);
-
-  // Terminal box
-  var terminal = document.createElement('div');
-  terminal.className = 'agent-terminal';
-
-  var termContent = document.createElement('div');
-  termContent.className = 'agent-terminal-content markdown-body';
-  var outputText = preview.output || '*Agent starting...*';
-  if (typeof marked !== 'undefined') {
-    termContent.innerHTML = marked.parse(outputText);
-  } else {
-    termContent.textContent = outputText;
-  }
-  terminal.appendChild(termContent);
-
-  // Alive indicator — pulsing dot + rotating message
-  var aliveStrip = document.createElement('div');
-  aliveStrip.className = 'agent-alive-strip';
-  var aliveDot = document.createElement('span');
-  aliveDot.className = 'agent-alive-dot';
-  aliveStrip.appendChild(aliveDot);
-  var aliveMsg = document.createElement('span');
-  aliveMsg.className = 'agent-alive-msg';
-  aliveMsg.textContent = AGENT_THINKING_MESSAGES[Math.floor(Math.random() * AGENT_THINKING_MESSAGES.length)] + '\u2026';
-  aliveStrip.appendChild(aliveMsg);
-
-  // Inactivity indicator — hidden until 2 min idle
-  var inactivityEl = document.createElement('span');
-  inactivityEl.className = 'agent-inactivity-indicator';
-  inactivityEl.style.display = 'none';
-  aliveStrip.appendChild(inactivityEl);
-
-  // Usage info (tokens + context %) — right-aligned
-  var aliveUsage = document.createElement('span');
-  aliveUsage.className = 'agent-alive-usage';
-  aliveUsage.textContent = formatAgentUsage(preview);
-  aliveStrip.appendChild(aliveUsage);
-
-  terminal.appendChild(aliveStrip);
-
-  var aliveTickCount = 0;
-  // Check inactivity every 5s, rotate message every ~30s
-  var aliveTimer = setInterval(function() {
-    aliveTickCount++;
-    if (aliveTickCount % 6 === 0) {
-      aliveMsg.textContent = AGENT_THINKING_MESSAGES[Math.floor(Math.random() * AGENT_THINKING_MESSAGES.length)] + '\u2026';
-    }
-
-    // Check inactivity
-    var cardEl = terminal.closest('.card');
-    if (!cardEl) return;
-    var cid = cardEl.dataset.cardId;
-    var current = null;
-    for (var i = 0; i < state.cards.length; i++) {
-      if (state.cards[i].card_id === cid) { current = state.cards[i]; break; }
-    }
-    if (!current || !current.preview || !current.preview.last_activity_at) {
-      inactivityEl.style.display = 'none';
-      return;
-    }
-    var elapsed = Math.floor((Date.now() - new Date(current.preview.last_activity_at).getTime()) / 1000);
-    if (elapsed < 120) {
-      inactivityEl.style.display = 'none';
-      return;
-    }
-    var mins = Math.floor(elapsed / 60);
-    inactivityEl.textContent = ' \u00b7 No new output for ' + mins + 'm';
-    inactivityEl.style.display = '';
-  }, 4000);
-
-  // Store timer ref on the card element for cleanup
-  var outerCard = container.closest('.card');
-  if (outerCard) outerCard._agentInactivityTimer = aliveTimer;
-
-  // Auto-scroll to bottom
-  requestAnimationFrame(function() { terminal.scrollTop = terminal.scrollHeight; });
-
-  container.appendChild(terminal);
-
-  // Bottom bar with expand toggle + cancel
-  var bottomBar = document.createElement('div');
-  bottomBar.className = 'agent-bottom-bar agent-bottom-bar-running';
-
-  var expandBtn = document.createElement('button');
-  expandBtn.className = 'agent-expand-btn';
-  expandBtn.textContent = 'Expand';
-  expandBtn.onclick = function() {
-    var isExpanded = terminal.classList.toggle('expanded');
-    expandBtn.textContent = isExpanded ? 'Collapse' : 'Expand';
-    if (!isExpanded) {
-      requestAnimationFrame(function() { terminal.scrollTop = terminal.scrollHeight; });
-    }
-  };
-  bottomBar.appendChild(expandBtn);
-
-  var cancelBtn = document.createElement('button');
-  cancelBtn.className = 'agent-cancel-btn';
-  cancelBtn.textContent = 'Cancel';
-  cancelBtn.onclick = function() {
-    cancelBtn.disabled = true;
-    fetch('/api/agents/' + encodeURIComponent(cardData.card_id), {
-      method: 'DELETE'
-    })
-      .then(function(r) {
-        if (!r.ok) return r.text().then(function(t) { try { var d = JSON.parse(t); throw new Error(d.error || 'Failed'); } catch(e) { if (e instanceof SyntaxError) throw new Error('Server returned ' + r.status); throw e; } });
-        showToast('Agent cancelled');
-      })
-      .catch(function(err) {
-        showToast(err.message || 'Cancel failed', 'error');
-        cancelBtn.disabled = false;
-      });
-  };
-  bottomBar.appendChild(cancelBtn);
-
-  container.appendChild(bottomBar);
-}
-
-function renderAgentCompleted(container, cardData) {
-  var preview = cardData.preview || {};
-  var isSuccess = preview.status === 'completed';
-  var outputText = preview.output || '';
 
   // Terminal box — compact height with gradient fade
   var terminal = document.createElement('div');
@@ -1568,7 +1028,7 @@ function renderAgentCompleted(container, cardData) {
 
   var termContent = document.createElement('div');
   termContent.className = 'agent-terminal-content markdown-body';
-  if (typeof marked !== 'undefined' && outputText) {
+  if (typeof marked !== 'undefined') {
     termContent.innerHTML = marked.parse(outputText);
   } else {
     termContent.textContent = outputText;
@@ -1577,32 +1037,28 @@ function renderAgentCompleted(container, cardData) {
   container.appendChild(terminal);
 
   // Bottom bar with usage info (left) + expand toggle (right)
+  var bottomBar = document.createElement('div');
+  bottomBar.className = 'agent-bottom-bar agent-bottom-bar-completed';
+
   var usageStr = formatAgentUsage(preview);
-  if (outputText || usageStr) {
-    var bottomBar = document.createElement('div');
-    bottomBar.className = 'agent-bottom-bar agent-bottom-bar-completed';
-
-    if (usageStr) {
-      var usageEl = document.createElement('span');
-      usageEl.className = 'agent-bottom-usage';
-      usageEl.textContent = usageStr;
-      bottomBar.appendChild(usageEl);
-    }
-
-    if (outputText) {
-      var expandBtn = document.createElement('button');
-      expandBtn.className = 'agent-expand-btn';
-      expandBtn.textContent = 'Expand';
-      expandBtn.onclick = function() {
-        var isExpanded = terminal.classList.toggle('expanded');
-        terminal.classList.toggle('agent-terminal-compact', !isExpanded);
-        expandBtn.textContent = isExpanded ? 'Collapse' : 'Expand';
-      };
-      bottomBar.appendChild(expandBtn);
-    }
-
-    container.appendChild(bottomBar);
+  if (usageStr) {
+    var usageEl = document.createElement('span');
+    usageEl.className = 'agent-bottom-usage';
+    usageEl.textContent = usageStr;
+    bottomBar.appendChild(usageEl);
   }
+
+  var expandBtn = document.createElement('button');
+  expandBtn.className = 'agent-expand-btn';
+  expandBtn.textContent = 'Expand';
+  expandBtn.onclick = function() {
+    var isExpanded = terminal.classList.toggle('expanded');
+    terminal.classList.toggle('agent-terminal-compact', !isExpanded);
+    expandBtn.textContent = isExpanded ? 'Collapse' : 'Expand';
+  };
+  bottomBar.appendChild(expandBtn);
+
+  container.appendChild(bottomBar);
 }
 
 function formatAgentDuration(seconds) {
@@ -1638,14 +1094,6 @@ function formatAgentUsage(preview) {
     parts.push(cost < 0.01 ? '<$0.01' : '$' + cost.toFixed(2));
   }
   return parts.join(' \u00b7 ');
-}
-
-function formatElapsed(isoTimestamp) {
-  var start = new Date(isoTimestamp).getTime();
-  var elapsed = Math.max(0, Math.floor((Date.now() - start) / 1000));
-  var mins = Math.floor(elapsed / 60);
-  var secs = elapsed % 60;
-  return mins + ':' + (secs < 10 ? '0' : '') + secs;
 }
 
 function buildCardPrompt(card) {
@@ -1805,8 +1253,7 @@ function _buildResponsePrompt(card) {
 function _buildAgentPrompt(preview) {
   var lines = [];
   var status = preview.status || 'pending';
-  var model = getModelDisplay(preview.model, preview.backend);
-  lines.push('Agent: ' + status + (model ? ' (' + model + ')' : ''));
+  lines.push('Agent: ' + status + (preview.model ? ' (' + preview.model + ')' : ''));
   if (preview.task) lines.push('Task: ' + preview.task);
   if (preview.duration != null) lines.push('Duration: ' + formatAgentDuration(preview.duration));
   if (preview.error) lines.push('Error: ' + preview.error);

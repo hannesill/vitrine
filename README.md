@@ -34,7 +34,7 @@ pip install vitrine
 
 **Agent skill:** [M4](https://github.com/hannesill/m4) ships the `vitrine-api` skill that teaches coding agents this API, and installs it with `m4 skills`.
 
-**Optional:** The built-in agent actions (Reproduce, Report, Paper) spawn headless CLI agent sessions. Supported backends: [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`), [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini`), and [Codex CLI](https://github.com/openai/codex) (`codex`). Install any of these and select your preferred backend from the agent config form before running.
+**Study tasks:** The board's action palette (Cmd/Ctrl+K) copies a prompt for reproducing a study, compiling its report, drafting a paper or building a presentation. Paste it into your coding agent (Claude Code, Codex, or any other) to run the task there. Each prompt carries its full instructions, from the skills in `src/vitrine/skills/`, so the agent needs no setup.
 
 ## Quick Start
 

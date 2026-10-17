@@ -45,7 +45,7 @@ from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 from starlette.websockets import WebSocket
 
-from vitrine import routes_agent, routes_card, routes_study, ws_handlers
+from vitrine import routes_card, routes_study, ws_handlers
 from vitrine._types import CardDescriptor
 from vitrine._utils import (
     OWNER_CHECK_INTERVAL_SECONDS,
@@ -54,6 +54,7 @@ from vitrine._utils import (
     SUPPORTED_DISPLAY_HOSTS,
     OwnerRejected,
     browser_opening_enabled,
+    is_pid_alive,
     is_same_process_alive,
     keep_out_of_git,
     package_version,
@@ -61,13 +62,6 @@ from vitrine._utils import (
     process_start_time,
 )
 from vitrine.artifacts import ArtifactStore, _serialize_card
-from vitrine.dispatch import (
-    DispatchInfo,
-    _dispatch_watchdog,
-    _is_pid_alive,
-    cleanup_dispatches,
-    reconcile_orphaned_agents,
-)
 from vitrine.study_manager import StudyManager
 
 logger = logging.getLogger(__name__)
@@ -190,15 +184,6 @@ class DisplayServer:
         self._load_selections()
         self._selection_save_timer: threading.Timer | None = None
 
-        # Agent dispatch state
-        self._dispatches: dict[str, DispatchInfo] = {}
-        self._watchdog_task: asyncio.Task | None = None
-
-        # Fix agent cards orphaned by previous server crashes/restarts
-        fixed = reconcile_orphaned_agents(self)
-        if fixed:
-            logger.info(f"Reconciled {fixed} orphaned agent card(s)")
-
         # Server start time for health endpoint
         self._started_at = datetime.now(timezone.utc)
 
@@ -298,21 +283,10 @@ class DisplayServer:
                 _r(routes_study.api_study_file),
                 methods=["GET"],
             ),
-            # Agent endpoints
             Route(
-                "/api/studies/{study:path}/agents",
-                _r(routes_agent.api_create_agent),
-                methods=["POST"],
-            ),
-            Route(
-                "/api/agents/{card_id}/run",
-                _r(routes_agent.api_run_agent),
-                methods=["POST"],
-            ),
-            Route(
-                "/api/agents/{card_id}",
-                _r(routes_agent.api_agent_handler),
-                methods=["GET", "DELETE"],
+                "/api/studies/{study:path}/prompts/{task}",
+                _r(routes_study.api_study_task_prompt),
+                methods=["GET"],
             ),
             # Study delete & global export
             Route(
@@ -335,13 +309,6 @@ class DisplayServer:
             routes.append(Mount("/static", app=StaticFiles(directory=str(_STATIC_DIR))))
 
         return Starlette(routes=routes)
-
-    # --- Public interface for dispatch (DispatchHost protocol) ---
-
-    @property
-    def dispatches(self) -> dict[str, DispatchInfo]:
-        """Agent dispatch state, keyed by card_id."""
-        return self._dispatches
 
     async def broadcast(self, message: dict[str, Any]) -> None:
         """Send a message to all connected WebSocket clients (public API)."""
@@ -647,13 +614,12 @@ class DisplayServer:
                 return
             if self._thread is not None:
                 # A previous stop may have timed out before its thread exited.
-                # Its thread finalizer has now drained the watchdog, so finish
-                # that generation's cleanup before installing new state.
+                # That thread has exited now, so finish that generation's
+                # cleanup before installing new state.
                 self.stop()
 
             self.port = self._find_port()
             self._started.clear()
-            self._watchdog_task = None
 
             config = uvicorn.Config(
                 app=self._app,
@@ -671,24 +637,8 @@ class DisplayServer:
                 asyncio.set_event_loop(loop)
                 self._started.set()
 
-                async def _serve() -> None:
-                    watchdog = asyncio.create_task(_dispatch_watchdog(self))
-                    if self._loop is loop and self._server is server:
-                        self._watchdog_task = watchdog
-                    try:
-                        await server.serve()
-                    finally:
-                        if not watchdog.done():
-                            watchdog.cancel()
-                        await asyncio.gather(
-                            watchdog,
-                            return_exceptions=True,
-                        )
-                        if self._watchdog_task is watchdog:
-                            self._watchdog_task = None
-
                 try:
-                    loop.run_until_complete(_serve())
+                    loop.run_until_complete(server.serve())
                 finally:
                     loop.close()
                     if self._loop is loop:
@@ -758,9 +708,6 @@ class DisplayServer:
                         "restart is blocked until that thread exits."
                     )
 
-            # The server-thread finalizer cancels and awaits the watchdog.
-            # Cleanup must happen only after join confirms that finalizer ran.
-            cleanup_dispatches(self)
             self._remove_pid_file()
             # Flush pending selection save
             if self._selection_save_timer is not None:
@@ -951,7 +898,7 @@ def _run_standalone(
         if pid_path.exists():
             info = load_server_metadata(pid_path)
             pid = info["pid"]
-            if not _is_pid_alive(pid):
+            if not is_pid_alive(pid):
                 pid_path.unlink()
             elif _check_health(
                 info["api_url"],
