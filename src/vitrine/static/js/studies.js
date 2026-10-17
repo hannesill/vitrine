@@ -165,6 +165,7 @@ function renderDropdown() {
 }
 
 function selectStudy(label) {
+  if (typeof hideCardPage === 'function') hideCardPage();
   state.activeStudyFilter = label;
   closeDropdown();
   updateDropdownTrigger();
@@ -457,15 +458,17 @@ function applyStudyFilter() {
 // ================================================================
 function parseHash() {
   var hash = location.hash || '';
-  if (!hash || hash === '#') return { study: null, card: null };
+  if (!hash || hash === '#') return { study: null, card: null, view: null };
   var params = hash.substring(1).split('&');
-  var result = { study: null, card: null };
+  var result = { study: null, card: null, view: null };
   for (var i = 0; i < params.length; i++) {
     var parts = params[i].split('=');
     if (parts[0] === 'study' && parts[1]) {
       result.study = decodeURIComponent(parts[1]);
     } else if (parts[0] === 'card' && parts[1]) {
       result.card = decodeURIComponent(parts[1]);
+    } else if (parts[0] === 'view' && parts[1]) {
+      result.view = decodeURIComponent(parts[1]);
     }
   }
   return result;
@@ -501,6 +504,11 @@ function applyHash() {
       selectStudy(h.study);
     }
   }
+  if (h.card && h.view === 'detail') {
+    showCardPage(h.card);
+    return;
+  }
+  if (state.cardPage) hideCardPage();
   if (h.card) {
     // Small delay to let study filter settle before scrolling
     setTimeout(function() { applyHashCard(h.card); }, 200);

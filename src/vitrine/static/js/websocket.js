@@ -73,6 +73,7 @@ function handleMessage(msg) {
       break;
     case 'display.update':
       updateCard(msg.card_id, msg.card);
+      if (typeof cardPageNotifyUpdate === 'function') cardPageNotifyUpdate(msg.card_id);
       break;
     case 'display.replay_done':
       state.liveMode = true;

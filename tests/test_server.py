@@ -19,6 +19,7 @@ import pandas as pd
 import pytest
 
 import vitrine.server as server_mod
+from vitrine._types import CodeOrigin
 from vitrine.artifacts import ArtifactStore
 from vitrine.renderer import render
 from vitrine.server import DisplayServer
@@ -1058,6 +1059,68 @@ class TestUpdateCommand:
         )
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
+
+
+class TestCardHistory:
+    """GET /api/card/{card_id}/history feeds the card page."""
+
+    @pytest.fixture
+    def client(self, server):
+        from starlette.testclient import TestClient
+
+        return TestClient(server._app)
+
+    def test_card_without_revisions(self, client, store):
+        card = render("only version", store=store)
+        resp = client.get(f"/api/card/{card.card_id}/history")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["card"]["card_id"] == card.card_id
+        assert body["revisions"] == []
+        assert body["code"] == {}
+
+    def test_revisions_and_the_code_behind_each_version(self, client, store):
+        card = render(
+            "v1", store=store, code=CodeOrigin(path="draft.py", line=1, sha256="aa")
+        )
+        store.keep_code("aa", b"show('v1')\n", ".py")
+        store.keep_revision(card.card_id)
+        store.update_card(
+            card.card_id,
+            preview={"text": "v2"},
+            code={"path": "final.py", "line": 3, "sha256": "bb"},
+        )
+        store.keep_code("bb", b"show('v2')\n", ".py")
+
+        body = client.get(f"/api/card/{card.card_id}/history").json()
+        assert body["card"]["preview"]["text"] == "v2"
+        [revision] = body["revisions"]
+        assert revision["card"]["preview"]["text"] == "v1"
+        assert body["code"] == {"aa": "show('v1')\n", "bb": "show('v2')\n"}
+
+    def test_code_without_a_kept_copy_is_left_out(self, client, store):
+        card = render(
+            "x", store=store, code=CodeOrigin(path="<stdin>", line=2, sha256=None)
+        )
+        body = client.get(f"/api/card/{card.card_id}/history").json()
+        assert body["code"] == {}
+
+    def test_finds_a_card_by_prefix(self, client, store):
+        card = render("x", store=store)
+        resp = client.get(f"/api/card/{card.card_id[:8]}/history")
+        assert resp.json()["card"]["card_id"] == card.card_id
+
+    def test_unknown_card(self, client):
+        assert client.get("/api/card/nonexistent/history").status_code == 404
+
+    def test_card_in_a_study(self, rm_server, study_mgr):
+        from starlette.testclient import TestClient
+
+        label, store = study_mgr.get_or_create_study("sepsis")
+        card = render("x", study=label, store=store)
+        study_mgr.register_card(card.card_id, study_mgr.get_dir_for_label(label))
+        resp = TestClient(rm_server._app).get(f"/api/card/{card.card_id}/history")
+        assert resp.json()["card"]["study"] == "sepsis"
 
 
 class TestStudyManagerServer:

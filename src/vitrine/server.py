@@ -9,6 +9,7 @@ Endpoints:
     GET  /static/{path}                  → static files (vendor JS, etc.)
     WS   /ws                             → bidirectional display channel
     GET  /api/cards?study=...             → list card descriptors
+    GET  /api/card/{card_id}/history     → card, its revisions, and their code
     GET  /api/table/{card_id}            → table page (offset, limit, sort)
     GET  /api/artifact/{card_id}         → raw artifact
     GET  /api/session                    → session metadata
@@ -256,6 +257,7 @@ class DisplayServer:
             Route("/api/table/{card_id}/export", _r(routes_card.api_table_export)),
             Route("/api/table/{card_id}", _r(routes_card.api_table)),
             Route("/api/card/{card_id}", _r(routes_card.api_card)),
+            Route("/api/card/{card_id}/history", _r(routes_card.api_card_history)),
             Route(
                 "/api/card/{card_id}/delete",
                 _r(routes_card.api_card_delete),
