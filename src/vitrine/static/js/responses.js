@@ -134,6 +134,13 @@ function sendResponse(cardData, cardEl, action, message) {
     }));
   }
 
+  // Mirror what the server persists so copying the card includes the
+  // response before the next replay.
+  cardData.response_requested = false;
+  cardData.response_action = action;
+  cardData.response_message = message;
+  cardData.response_values = formValues;
+
   // Update UI: remove response panel, keep decision branding
   var responseUI = cardEl.querySelector('.card-response-ui');
   if (responseUI) {
