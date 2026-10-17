@@ -23,9 +23,13 @@ from vitrine import study_context, register_output_dir, show
 import pandas as pd
 from pathlib import Path
 
-STUDY = "<study-label>"  # provided as context when dispatched
-output_dir = register_output_dir(study=STUDY)
+STUDY = "<study-label>"  # the study label given with this task
+# The output directory given with this task, or None if it gave none
+OUTPUT_DIR = "<output-directory>"
+output_dir = Path(OUTPUT_DIR) if OUTPUT_DIR else register_output_dir(study=STUDY)
 ```
+
+Call `register_output_dir()` only when the task gave no output directory. Without a path it points the study at a new, empty `output/` folder, cutting it off from the directory that holds its scripts and data.
 
 ## Procedure
 
@@ -59,9 +63,19 @@ card_id = show(progress, title="Reproducibility Audit", study=STUDY)
 
 ### Step 4: Execute Each Script
 
+Rerunning a script overwrites its outputs, so run everything in a copy of the output directory:
+
+```python
+import shutil
+import tempfile
+
+sandbox = Path(tempfile.mkdtemp(prefix="vitrine-reproduce-")) / output_dir.name
+shutil.copytree(output_dir, sandbox)
+```
+
 For each script in order:
 
-1. **Run 1** — Execute the script via the Bash tool: `python scripts/NN_name.py` from the output directory. Capture stdout/stderr and exit code. Record output files produced in `data/` and `plots/` (snapshot filenames and file hashes).
+1. **Run 1** — Execute the script with `python scripts/NN_name.py` from `sandbox`. Capture stdout/stderr and exit code. Record output files produced in `data/` and `plots/` (snapshot filenames and file hashes).
 
 2. **Run 2** — Execute the same script a second time. Capture the same information.
 
@@ -90,7 +104,7 @@ show(progress, title="Reproducibility Audit", replace=card_id, study=STUDY)
 
 ### Step 5: Write REPRODUCIBILITY.md
 
-Save a full report to `output_dir / "REPRODUCIBILITY.md"` with:
+Save a full report to `output_dir / "REPRODUCIBILITY.md"` (the study's own output directory, not the sandbox) with:
 
 ```markdown
 # Reproducibility Report
@@ -145,15 +159,21 @@ verdict = f"\n**Verdict:** {pass_count}/{total} scripts pass, {det_count}/{total
 show(progress + verdict, title="Reproducibility Audit", replace=card_id, study=STUDY)
 ```
 
+Then delete the sandbox:
+
+```python
+shutil.rmtree(sandbox.parent)
+```
+
 ## Critical Implementation Notes
 
-1. **Always run from the output directory.** Scripts use `Path(__file__).resolve().parent.parent` to find `data/` and `plots/`, so the working directory must be `output_dir`.
+1. **Always run from the sandbox.** Scripts use `Path(__file__).resolve().parent.parent` to find `data/` and `plots/`, so the working directory must be `sandbox`. Running them in `output_dir` would overwrite the study's own outputs.
 
 2. **Hash comparison for determinism.** Use SHA-256 hashes of output files, not content comparison. For parquet files, hash the file bytes. Some non-determinism is acceptable in floating-point edge cases — note it but don't fail the script.
 
 3. **Claim matching is best-effort.** Not every card will map cleanly to a script. Use title keywords, output filenames, and row counts as heuristics. Mark anything ambiguous as "unverifiable" rather than guessing.
 
-4. **Do not modify scripts.** This is an audit — run scripts as-is. If a script fails, record the failure and move on. (You are working in a sandbox copy; the original study files are safe.)
+4. **Do not modify scripts.** This is an audit — run scripts as-is. If a script fails, record the failure and move on. The only file you write to `output_dir` is `REPRODUCIBILITY.md`.
 
 5. **Use `study=STUDY` on every `show()` call.** This keeps audit cards grouped with the study being audited.
 

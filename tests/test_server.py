@@ -1189,20 +1189,6 @@ class TestStudyManagerServer:
 class TestSingletonGuard:
     """Test helpers that prevent duplicate server instances."""
 
-    def test_is_pid_alive_current_process(self):
-        """Current process PID should be alive."""
-        import os
-
-        from vitrine.server import _is_pid_alive
-
-        assert _is_pid_alive(os.getpid()) is True
-
-    def test_is_pid_alive_dead_pid(self):
-        """Non-existent PID should not be alive."""
-        from vitrine.server import _is_pid_alive
-
-        assert _is_pid_alive(999999999) is False
-
     def test_check_health_on_running_server(self, store):
         """_check_health returns True for a running server."""
         from vitrine.server import _check_health
@@ -1224,42 +1210,6 @@ class TestSingletonGuard:
             assert _check_health(url) is True
         finally:
             srv.stop()
-
-    def test_stop_drains_dispatch_watchdog_before_cleanup(self, store, monkeypatch):
-        import time
-
-        srv = DisplayServer(
-            store=store,
-            port=7748,
-            host="127.0.0.1",
-            session_id="watchdog-stop-test",
-        )
-        watchdog = None
-        try:
-            srv.start(open_browser=False)
-            deadline = time.monotonic() + 1.0
-            while srv._watchdog_task is None and time.monotonic() < deadline:
-                time.sleep(0.01)
-            watchdog = srv._watchdog_task
-            assert watchdog is not None
-
-            cleanup_called = False
-
-            def assert_watchdog_drained(_server):
-                nonlocal cleanup_called
-                assert watchdog.done()
-                cleanup_called = True
-
-            monkeypatch.setattr(
-                server_mod, "cleanup_dispatches", assert_watchdog_drained
-            )
-        finally:
-            srv.stop()
-
-        assert cleanup_called
-        assert watchdog.done()
-        assert srv._watchdog_task is None
-        assert srv._loop is None
 
     def test_stop_timeout_keeps_generation_and_blocks_restart(self, store, monkeypatch):
         srv = DisplayServer(
@@ -1287,11 +1237,11 @@ class TestSingletonGuard:
         uvicorn_server = StuckServer()
         cleanup_called = False
 
-        def record_cleanup(_server):
+        def record_cleanup():
             nonlocal cleanup_called
             cleanup_called = True
 
-        monkeypatch.setattr(server_mod, "cleanup_dispatches", record_cleanup)
+        monkeypatch.setattr(srv, "_remove_pid_file", record_cleanup)
         monkeypatch.setattr(server_mod, "_SERVER_THREAD_JOIN_TIMEOUT_SECONDS", 0.01)
         srv._thread = thread
         srv._server = uvicorn_server
@@ -1636,201 +1586,66 @@ class TestDismiss:
             assert msg["card"]["dismissed"] is True
 
 
-class TestAgentEndpoints:
-    """Test the agent dispatch REST endpoints.
-
-    These endpoints:
-    - POST /api/studies/{study}/agents  → create agent card
-    - POST /api/agents/{card_id}/run    → start agent
-    - GET  /api/agents/{card_id}        → get status
-    - DELETE /api/agents/{card_id}      → cancel agent
-    """
+class TestTaskPromptEndpoint:
+    """GET /api/studies/{study}/prompts/{task} returns the prompt that runs a
+    study task in the researcher's own agent."""
 
     @pytest.fixture
-    def agent_app(self, study_mgr):
-        """Create a DisplayServer app with StudyManager for agent tests."""
+    def client(self, study_mgr):
+        from starlette.testclient import TestClient
+
         srv = DisplayServer(
             study_manager=study_mgr,
             port=7797,
             host="127.0.0.1",
             token=_TEST_TOKEN,
-            session_id="agent-test",
+            session_id="prompt-test",
         )
-        return srv._app, srv
+        return TestClient(srv._app)
 
-    def test_create_agent_card(self, agent_app, study_mgr):
-        from starlette.testclient import TestClient
+    def test_returns_prompt_with_study_and_output_dir(self, client, study_mgr):
+        study_mgr.get_or_create_study("my study")
+        output_dir = study_mgr.register_output_dir("my study")
 
-        app, _srv = agent_app
-        # Create a study first
-        study_mgr.get_or_create_study("my-study")
+        resp = client.get("/api/studies/my%20study/prompts/report")
 
-        client = TestClient(app)
-        resp = client.post(
-            "/api/studies/my-study/agents",
-            json={"task": "reproduce"},
-        )
         assert resp.status_code == 200
         data = resp.json()
-        assert data["status"] == "ok"
-        assert data["task"] == "reproduce"
-        assert data["study"] == "my-study"
-        assert "card_id" in data
+        assert data["task"] == "report"
+        assert data["study"] == "my study"
+        assert "**Study:** `my study`" in data["prompt"]
+        assert f"**Output directory:** `{output_dir}`" in data["prompt"]
+        assert "# Export Research Report" in data["prompt"]
 
-    def test_create_agent_card_report(self, agent_app, study_mgr):
-        from starlette.testclient import TestClient
+    def test_study_without_output_dir_still_gets_prompt(self, client, study_mgr):
+        study_mgr.get_or_create_study("bare")
 
-        app, _srv = agent_app
-        study_mgr.get_or_create_study("my-study")
+        resp = client.get("/api/studies/bare/prompts/reproduce")
 
-        client = TestClient(app)
-        resp = client.post(
-            "/api/studies/my-study/agents",
-            json={"task": "report"},
-        )
         assert resp.status_code == 200
-        assert resp.json()["task"] == "report"
+        assert "**Output directory:** none yet" in resp.json()["prompt"]
 
-    def test_create_agent_card_paper(self, agent_app, study_mgr):
-        from starlette.testclient import TestClient
+    def test_unknown_task_is_400(self, client, study_mgr):
+        study_mgr.get_or_create_study("s1")
 
-        app, _srv = agent_app
-        study_mgr.get_or_create_study("my-study")
+        resp = client.get("/api/studies/s1/prompts/deploy")
 
-        client = TestClient(app)
-        resp = client.post(
-            "/api/studies/my-study/agents",
-            json={"task": "paper"},
-        )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["task"] == "paper"
-        assert data["study"] == "my-study"
-        assert "card_id" in data
-
-    def test_create_agent_unknown_task(self, agent_app, study_mgr):
-        from starlette.testclient import TestClient
-
-        app, _srv = agent_app
-        study_mgr.get_or_create_study("my-study")
-
-        client = TestClient(app)
-        resp = client.post(
-            "/api/studies/my-study/agents",
-            json={"task": "nonexistent"},
-        )
         assert resp.status_code == 400
         assert "Unknown task" in resp.json()["error"]
 
-    def test_create_agent_invalid_json(self, agent_app):
-        from starlette.testclient import TestClient
+    def test_unknown_study_is_404(self, client):
+        resp = client.get("/api/studies/missing/prompts/report")
 
-        app, _srv = agent_app
-        client = TestClient(app)
-        resp = client.post(
-            "/api/studies/test/agents",
-            content="not json",
-            headers={"content-type": "application/json"},
-        )
-        assert resp.status_code == 400
-        assert "Invalid JSON" in resp.json()["error"]
+        assert resp.status_code == 404
 
-    def test_get_agent_status_unknown(self, agent_app):
-        from starlette.testclient import TestClient
-
-        app, _srv = agent_app
-        client = TestClient(app)
-        resp = client.get("/api/agents/nonexistent")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "none"
-
-    def test_get_agent_status_known(self, agent_app, study_mgr):
-        from starlette.testclient import TestClient
-
-        app, _srv = agent_app
+    def test_agent_runner_routes_are_gone(self, client, study_mgr):
         study_mgr.get_or_create_study("s1")
 
-        client = TestClient(app)
-        # Create an agent card first
-        resp = client.post("/api/studies/s1/agents", json={"task": "reproduce"})
-        card_id = resp.json()["card_id"]
+        create = client.post("/api/studies/s1/agents", json={"task": "report"})
+        run = client.post("/api/agents/abc123/run", json={})
 
-        # Get status
-        resp = client.get(f"/api/agents/{card_id}")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "pending"
-        assert data["task"] == "reproduce"
-
-    def test_run_agent_missing_card(self, agent_app):
-        from starlette.testclient import TestClient
-
-        app, _srv = agent_app
-        client = TestClient(app)
-        resp = client.post("/api/agents/nonexistent/run", json={})
-        assert resp.status_code == 400
-        assert "No agent card" in resp.json()["error"]
-
-    def test_delete_agent_not_found(self, agent_app):
-        """DELETE on unknown card returns 404."""
-        from starlette.testclient import TestClient
-
-        app, _srv = agent_app
-        client = TestClient(app)
-        resp = client.delete("/api/agents/nonexistent")
-        assert resp.status_code == 404
-
-    def test_delete_orphaned_agent_card(self, agent_app, study_mgr):
-        """DELETE force-fails an orphaned agent card stuck in 'running'."""
-        from starlette.testclient import TestClient
-
-        from vitrine._types import CardDescriptor, CardType
-
-        app, _srv = agent_app
-        _, store = study_mgr.get_or_create_study("s1")
-
-        # Create an AGENT card directly in the store (simulating orphan)
-        card = CardDescriptor(
-            card_id="orphan123",
-            card_type=CardType.AGENT,
-            title="Orphaned Agent",
-            study="s1",
-            preview={"status": "running", "output": "stuck"},
-        )
-        store.store_card(card)
-
-        client = TestClient(app)
-        resp = client.delete("/api/agents/orphan123")
-        assert resp.status_code == 200
-
-        # Verify card was force-failed
-        cards = store.list_cards()
-        updated = next(c for c in cards if c.card_id == "orphan123")
-        assert updated.preview["status"] == "failed"
-        assert "no longer running" in updated.preview["error"].lower()
-
-    def test_delete_completed_agent_returns_404(self, agent_app, study_mgr):
-        """DELETE on a completed (non-running) agent card returns 404."""
-        from starlette.testclient import TestClient
-
-        from vitrine._types import CardDescriptor, CardType
-
-        app, _srv = agent_app
-        _, store = study_mgr.get_or_create_study("s1")
-
-        card = CardDescriptor(
-            card_id="done123",
-            card_type=CardType.AGENT,
-            title="Completed Agent",
-            study="s1",
-            preview={"status": "completed", "output": "done"},
-        )
-        store.store_card(card)
-
-        client = TestClient(app)
-        resp = client.delete("/api/agents/done123")
-        assert resp.status_code == 404
+        assert create.status_code in (404, 405)
+        assert run.status_code in (404, 405)
 
 
 class TestEventQueueBounding:

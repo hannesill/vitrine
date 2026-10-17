@@ -15,11 +15,28 @@ Assemble a paper skeleton from a vitrine study's full provenance trail. The outp
 - Researcher wants a structured starting point for a journal submission
 - Researcher wants to document the study in publication-ready format
 
+## Setup
+
+```python
+from vitrine import list_annotations, register_output_dir, show, study_context
+from pathlib import Path
+
+STUDY = "<study-label>"  # the study label given with this task
+# The output directory given with this task, or None if it gave none
+OUTPUT_DIR = "<output-directory>"
+output_dir = Path(OUTPUT_DIR) if OUTPUT_DIR else register_output_dir(study=STUDY)
+paper_dir = output_dir / "paper"
+```
+
+Call `register_output_dir()` only when the task gave no output directory. Without a path it points the study at a new, empty `output/` folder, cutting it off from the directory that holds its scripts and data.
+
+Write everything this skill creates inside `paper_dir`. If it already exists, ask the researcher whether to overwrite it or use a new folder such as `paper-2/`; it may hold an earlier draft they have edited. Then create it with `paper_dir.mkdir(parents=True, exist_ok=True)`.
+
 ## Procedure
 
 ### Step 1: Parse Researcher Instructions
 
-The `additional_prompt` (in the dispatch context below) may contain:
+The researcher's request may name:
 - **Venue**: journal name or conference (affects length, style, formatting)
 - **Paper type**: full paper, brief communication, methods paper, letter
 - **Framing**: specific angle or narrative emphasis
@@ -29,12 +46,14 @@ If no venue is specified, default to a standard full-length clinical research pa
 
 ### Step 2: Gather Context
 
-Read the study context JSON provided below. Extract:
+Call `study_context(STUDY)` and extract:
 - `cards` — all cards with `card_id`, `title`, `type`, `preview`
 - `decisions_made` — all decisions with outcomes, rationale, timestamps
 - `pending_responses` — any unresolved blocking cards (note these in the paper)
 
-Read these files from the output directory (copies are available in the workspace):
+Call `list_annotations(study=STUDY)` for the researcher's notes on cards (newest first).
+
+Read these files from `output_dir`:
 - `PROTOCOL.md` — study protocol (research question, design, analysis plan)
 - `RESULTS.md` — study results and conclusions
 - `REPORT.md` — compiled research report (if available)
@@ -43,7 +62,7 @@ Read these files from the output directory (copies are available in the workspac
 
 ### Step 3: Write `paper.md`
 
-Create `paper.md` in the workspace with this IMRAD structure:
+Create `paper.md` in `paper_dir` with this IMRAD structure:
 
 ```markdown
 # <Title derived from study description>
@@ -173,6 +192,8 @@ where citations should be inserted.
 
 ### Step 4: Write Supporting Files
 
+Write these next to `paper.md` in `paper_dir`.
+
 **`abstract.md`** — The abstract section extracted as a standalone file (for submission systems that require it separately).
 
 **`references.bib`** — BibTeX entries for:
@@ -228,28 +249,21 @@ chmod +x build.sh && ./build.sh
 
 ### Step 5: Assemble Figures
 
-Copy plot files into a `figures/` directory:
+Copy the study's plot files into `paper_dir / "figures"`. From `paper_dir`:
 ```bash
 mkdir -p figures
-cp plots/*.png figures/ 2>/dev/null || true
-cp plots/*.svg figures/ 2>/dev/null || true
+cp ../plots/*.png figures/ 2>/dev/null || true
+cp ../plots/*.svg figures/ 2>/dev/null || true
 ```
 
-### Step 6: Stream Progress
+### Step 6: Report Back
 
-Output progress to stdout as markdown (standard dispatch behavior). Structure output with clear headings so the researcher sees progress in the agent card:
+Post a summary card with `show(summary, title="Paper Draft", study=STUDY)` and give the researcher the same summary:
 
 ```
-## Gathering study context...
-[summary of what was found]
-
-## Writing Methods section...
-[preview of auto-generated methods]
-
-## Writing Results section...
-[preview of key findings]
-
 ## Paper draft complete
+
+**Folder:** <paper_dir>
 
 **Files created:**
 - paper.md (N words)
@@ -283,6 +297,6 @@ Output progress to stdout as markdown (standard dispatch behavior). Structure ou
 
 6. **Venue adaptation.** Brief communications: shorter intro/discussion, tighter abstract. Methods papers: expanded methods, reproducibility emphasis. Letters: minimal background, focus on novel finding.
 
-7. **Workspace is a copy.** The output directory contents are copies — you can freely read them. Write new files (paper.md, abstract.md, etc.) alongside the copies. Do not modify the copied study files.
+7. **Leave the study files alone.** Read from `output_dir`, write only inside `paper_dir`. Never modify the study's scripts, data, plots or markdown files.
 
 8. **Supplementary appendices.** The decision log, full scripts, annotations, and data provenance appendices are a differentiator. They align with STROBE/CONSORT transparency requirements. Always include them.

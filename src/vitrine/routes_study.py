@@ -86,6 +86,31 @@ async def api_study_context(server: DisplayServer, request: Request) -> JSONResp
     return JSONResponse(ctx)
 
 
+async def api_study_task_prompt(
+    server: DisplayServer, request: Request
+) -> JSONResponse:
+    """Return the prompt that runs a study task in the researcher's agent."""
+    from vitrine.task_prompts import TASK_SKILLS, build_task_prompt
+
+    study = request.path_params["study"]
+    task = request.path_params["task"]
+    if task not in TASK_SKILLS:
+        expected = ", ".join(TASK_SKILLS)
+        return JSONResponse(
+            {"error": f"Unknown task: {task!r} (expected one of: {expected})"},
+            status_code=400,
+        )
+    if not server.study_manager:
+        return JSONResponse({"error": "No study manager"}, status_code=400)
+
+    server.study_manager.refresh()
+    if server.study_manager.get_dir_for_label(study) is None:
+        return JSONResponse({"error": f"Study '{study}' not found"}, status_code=404)
+    output_dir = server.study_manager.get_output_dir(study)
+    prompt = build_task_prompt(task, study, output_dir)
+    return JSONResponse({"task": task, "study": study, "prompt": prompt})
+
+
 async def api_study_delete(server: DisplayServer, request: Request) -> JSONResponse:
     """Delete a study by label."""
     study = request.path_params["study"]

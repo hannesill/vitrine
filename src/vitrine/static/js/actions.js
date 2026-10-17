@@ -90,36 +90,36 @@ function getActions() {
     // Reproduce Study
     actions.push({
       icon: '&#9654;',
-      label: 'Reproduce Study',
+      label: 'Copy Prompt: Reproduce Study',
       handler: function() {
-        createAgentCard(studyLabel, 'reproduce');
+        copyTaskPrompt(studyLabel, 'reproduce');
       }
     });
 
     // Compile Report
     actions.push({
       icon: '&#128203;',
-      label: 'Compile Report',
+      label: 'Copy Prompt: Compile Report',
       handler: function() {
-        createAgentCard(studyLabel, 'report');
+        copyTaskPrompt(studyLabel, 'report');
       }
     });
 
     // Draft Paper
     actions.push({
       icon: '&#128221;',
-      label: 'Draft Paper',
+      label: 'Copy Prompt: Draft Paper',
       handler: function() {
-        createAgentCard(studyLabel, 'paper');
+        copyTaskPrompt(studyLabel, 'paper');
       }
     });
 
     // Create Presentation
     actions.push({
       icon: '&#127916;',
-      label: 'Create Presentation',
+      label: 'Copy Prompt: Create Presentation',
       handler: function() {
-        createAgentCard(studyLabel, 'presentation');
+        copyTaskPrompt(studyLabel, 'presentation');
       }
     });
   }
@@ -210,40 +210,48 @@ function renderActionPalette() {
 }
 
 // ================================================================
-// AGENT CARD CREATION
+// TASK PROMPTS
 // ================================================================
 
-function createAgentCard(studyLabel, task) {
-  fetch('/api/studies/' + encodeURIComponent(studyLabel) + '/agents', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task: task })
-  })
-    .then(function(r) {
-      if (!r.ok) return r.text().then(function(t) { try { var d = JSON.parse(t); throw new Error(d.error || 'Server returned ' + r.status); } catch(e) { if (e instanceof SyntaxError) throw new Error('Server returned ' + r.status); throw e; } });
-      return r.json();
-    })
-    .then(function() {
-      showToast('Agent card created');
-    })
-    .catch(function(err) {
-      showToast(err.message || 'Failed to create agent card', 'error');
+// Copy the prompt that runs a study task (reproduce, report, paper,
+// presentation) in the researcher's own coding agent.
+function copyTaskPrompt(studyLabel, task) {
+  var url = '/api/studies/' + encodeURIComponent(studyLabel)
+    + '/prompts/' + encodeURIComponent(task);
+  var text = fetch(url).then(function(r) {
+    return r.json().catch(function() { return {}; }).then(function(d) {
+      if (!r.ok || typeof d.prompt !== 'string') {
+        throw new Error(d.error || 'Server returned ' + r.status);
+      }
+      return d.prompt;
     });
-}
+  });
 
-// ================================================================
-// AGENT WEBSOCKET MESSAGES
-// ================================================================
-
-function handleAgentMessage(msg) {
-  switch (msg.type) {
-    case 'agent.completed':
-      showToast('Agent completed');
-      break;
-    case 'agent.failed':
-      showToast(msg.error || 'Agent failed', 'error');
-      break;
+  // Safari only lets a click write to the clipboard while the click is being
+  // handled, so hand it the pending text instead of awaiting the fetch first.
+  var written;
+  if (window.ClipboardItem && navigator.clipboard && navigator.clipboard.write) {
+    written = navigator.clipboard.write([new ClipboardItem({
+      'text/plain': text.then(function(t) {
+        return new Blob([t], { type: 'text/plain' });
+      })
+    })]);
+  } else if (navigator.clipboard && navigator.clipboard.writeText) {
+    written = text.then(function(t) { return navigator.clipboard.writeText(t); });
+  } else {
+    written = Promise.reject(new Error('Clipboard is not available'));
   }
+
+  written.then(function() {
+    showToast('Prompt copied \u2014 paste it into your agent');
+  }, function(err) {
+    // Prefer the server's error over the clipboard's generic one
+    text.then(function() {
+      showToast((err && err.message) || 'Failed to copy prompt', 'error');
+    }, function(fetchErr) {
+      showToast(fetchErr.message || 'Failed to copy prompt', 'error');
+    });
+  });
 }
 
 // ================================================================

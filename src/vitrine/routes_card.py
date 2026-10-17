@@ -74,11 +74,6 @@ async def api_card_delete(server: DisplayServer, request: Request) -> JSONRespon
 
     deleted = body.get("deleted", True)
 
-    if deleted and card_id in server.dispatches:
-        from vitrine.dispatch import cancel_agent
-
-        await cancel_agent(card_id, server)
-
     store = server._resolve_store(card_id)
     if store is None:
         return JSONResponse({"error": f"Card {card_id} not found"}, status_code=404)

@@ -15,11 +15,28 @@ Build a slide deck from a vitrine study's full provenance trail. The output is a
 - Researcher wants a structured starting point for a presentation
 - Researcher wants to communicate study findings to a specific audience
 
+## Setup
+
+```python
+from vitrine import register_output_dir, show, study_context
+from pathlib import Path
+
+STUDY = "<study-label>"  # the study label given with this task
+# The output directory given with this task, or None if it gave none
+OUTPUT_DIR = "<output-directory>"
+output_dir = Path(OUTPUT_DIR) if OUTPUT_DIR else register_output_dir(study=STUDY)
+deck_dir = output_dir / "presentation"
+```
+
+Call `register_output_dir()` only when the task gave no output directory. Without a path it points the study at a new, empty `output/` folder, cutting it off from the directory that holds its scripts and data.
+
+Write everything this skill creates inside `deck_dir`. If it already exists, ask the researcher whether to overwrite it or use a new folder such as `presentation-2/`; it may hold an earlier deck they have edited. Then create it with `deck_dir.mkdir(parents=True, exist_ok=True)`.
+
 ## Procedure
 
 ### Step 1: Parse Researcher Instructions
 
-The `additional_prompt` (in the dispatch context below) may contain:
+The researcher's request may name:
 - **Audience**: lab meeting, conference talk, thesis committee, grant review, departmental seminar
 - **Time limit**: presentation duration (affects slide count)
 - **Emphasis**: specific results, methods detail, or narrative angle
@@ -45,12 +62,12 @@ Adapt the slide count and content depth to the audience:
 
 ### Step 3: Gather Context
 
-Read the study context JSON provided below. Extract:
+Call `study_context(STUDY)` and extract:
 - `cards` — all cards with `card_id`, `title`, `type`, `preview`
 - `decisions_made` — all decisions with outcomes, rationale, timestamps
 - `pending_responses` — any unresolved blocking cards (note these in the slides)
 
-Read these files from the output directory (copies are available in the workspace):
+Read these files from `output_dir`:
 - `PROTOCOL.md` — study protocol (research question, design, analysis plan)
 - `RESULTS.md` — study results and conclusions
 - `REPORT.md` — compiled research report (if available)
@@ -59,7 +76,7 @@ Read these files from the output directory (copies are available in the workspac
 
 ### Step 4: Write `generate_slides.py`
 
-Create `generate_slides.py` in the workspace. The script must:
+Create `generate_slides.py` in `deck_dir`. The script must:
 
 1. **Import and install**: Start with `python-pptx` import (installed at runtime)
 2. **Professional styling**:
@@ -70,11 +87,11 @@ Create `generate_slides.py` in the workspace. The script must:
    - Consistent margins and alignment
 3. **Title slide**: Study title, author placeholder, date, institution placeholder
 4. **Content slides**: Each with a clear heading, concise bullet points (max 5-6 per slide), and speaker notes
-5. **Figure slides**: Embed PNG plots directly from `plots/` directory using `add_picture()`. Size figures prominently (centered, max width ~10 inches). Add a descriptive caption below.
+5. **Figure slides**: Embed PNG plots directly from the study's `plots/` directory (`output_dir / "plots"`, the parent of `deck_dir`) using `add_picture()`. Size figures prominently (centered, max width ~10 inches). Add a descriptive caption below.
 6. **Speaker notes**: Every slide gets detailed speaker notes explaining what to say — this is the full narrative. Include actual numbers from the study, decision rationale, and talking points.
 7. **Placeholders**: Use `[PLACEHOLDER: reason]` in slide text or notes where domain expertise is needed (e.g., literature context, clinical significance)
 8. **Real numbers only**: Every statistic must come from actual study outputs (RESULTS.md, table previews, script outputs). Never fabricate numbers.
-9. **Save** to `presentation.pptx` in the workspace directory
+9. **Save** to `presentation.pptx` in `deck_dir`
 
 Example script structure:
 ```python
@@ -84,6 +101,8 @@ from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
 from pathlib import Path
 import os
+
+PLOTS = Path(__file__).resolve().parent.parent / "plots"
 
 prs = Presentation()
 prs.slide_width = Inches(13.333)
@@ -120,33 +139,21 @@ print("Saved presentation.pptx")
 
 ### Step 5: Run the Script
 
-Execute the following:
+From `deck_dir`, run:
 ```bash
 pip install python-pptx && python generate_slides.py
 ```
 
 Verify the output file exists and report its size.
 
-### Step 6: Stream Progress
+### Step 6: Report Back
 
-Output progress to stdout as markdown (standard dispatch behavior). Structure output with clear headings so the researcher sees progress in the agent card:
+Post a summary card with `show(summary, title="Presentation", study=STUDY)` and give the researcher the same summary:
 
 ```
-## Analyzing study context...
-[summary of cards, decisions, plots found]
-
-## Planning deck structure...
-[audience type, slide count, outline]
-
-## Writing slide generator...
-[key slides being created]
-
-## Generating presentation...
-[running python-pptx script]
-
 ## Presentation complete
 
-**File:** presentation.pptx (N slides)
+**File:** <deck_dir>/presentation.pptx (N slides)
 **Audience:** [audience type]
 **Plots embedded:** N figures
 
@@ -179,6 +186,6 @@ Output progress to stdout as markdown (standard dispatch behavior). Structure ou
 
 6. **Audience adaptation.** A conference talk emphasizes the story arc and key result. A lab meeting goes deep on methods and decisions. A thesis committee wants comprehensive coverage. A grant review focuses on significance and innovation.
 
-7. **Workspace is a copy.** The output directory contents are copies — you can freely read them. Write new files (generate_slides.py, presentation.pptx) alongside the copies. Do not modify the copied study files.
+7. **Leave the study files alone.** Read from `output_dir`, write only inside `deck_dir`. Never modify the study's scripts, data, plots or markdown files.
 
 8. **python-pptx at runtime.** Install python-pptx with pip before running the script. Do not assume it is pre-installed.
