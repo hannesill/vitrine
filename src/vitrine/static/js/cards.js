@@ -3,10 +3,11 @@
 // ================================================================
 // MODEL DISPLAY NAMES
 // ================================================================
+// max_turns mirrors BackendConfig.supports_max_turns in dispatch.py
 var BACKENDS = {
-  claude: { display_name: 'Claude Code', models: { sonnet: 'Sonnet 4.5', opus: 'Opus 4.6', haiku: 'Haiku 4.5' }, default_model: 'sonnet' },
-  gemini: { display_name: 'Gemini CLI', models: { 'gemini-2.5-pro': '2.5 Pro', 'gemini-2.5-flash': '2.5 Flash' }, default_model: 'gemini-2.5-pro' },
-  codex:  { display_name: 'Codex CLI', models: { 'gpt-5-codex': 'GPT-5 Codex' }, default_model: 'gpt-5-codex' }
+  claude: { display_name: 'Claude Code', models: { sonnet: 'Sonnet 4.5', opus: 'Opus 4.6', haiku: 'Haiku 4.5' }, default_model: 'sonnet', max_turns: true },
+  gemini: { display_name: 'Gemini CLI', models: { 'gemini-2.5-pro': '2.5 Pro', 'gemini-2.5-flash': '2.5 Flash' }, default_model: 'gemini-2.5-pro', max_turns: false },
+  codex:  { display_name: 'Codex CLI', models: { 'gpt-5-codex': 'GPT-5 Codex' }, default_model: 'gpt-5-codex', max_turns: false }
 };
 
 function getModelDisplay(model, backend) {
@@ -1335,6 +1336,17 @@ function renderAgentConfigForm(container, cardData) {
   budgetRow.appendChild(budgetInput);
   form.appendChild(budgetRow);
 
+  // Only Claude Code can enforce a turn limit
+  function backendLimitsTurns() {
+    var b = BACKENDS[backendSelect.value];
+    return !!(b && b.max_turns);
+  }
+  function syncBudgetRow() {
+    budgetRow.style.display = backendLimitsTurns() ? '' : 'none';
+  }
+  syncBudgetRow();
+  backendSelect.addEventListener('change', syncBudgetRow);
+
   // Additional instructions
   var instrRow = document.createElement('div');
   instrRow.className = 'agent-config-row agent-config-row-full';
@@ -1378,8 +1390,9 @@ function renderAgentConfigForm(container, cardData) {
       model: modelSelect.value,
       additional_prompt: instrTextarea.value.trim()
     };
+    // Always send budget so a value from an earlier attempt is cleared
     var budgetVal = budgetInput.value.trim();
-    if (budgetVal) config.budget = parseFloat(budgetVal);
+    config.budget = budgetVal && backendLimitsTurns() ? parseFloat(budgetVal) : null;
     fetch('/api/agents/' + encodeURIComponent(cardData.card_id) + '/run', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

@@ -30,6 +30,9 @@ from vitrine._types import CardDescriptor, CardType
 from vitrine.dispatch import (
     DispatchInfo,
     _build_agent_preview,
+    _build_claude_args,
+    _build_codex_args,
+    _build_gemini_args,
     _cleanup_paper_workspace,
     _cleanup_sandbox,
     _create_paper_workspace,
@@ -401,6 +404,47 @@ class TestParseStreamEvent:
 # ---------------------------------------------------------------------------
 
 
+def _fold_stream(parse, lines):
+    """Mimic _stream_monitor: concatenate displayed text, keep the last usage."""
+    shown, usage = "", None
+    for line in lines:
+        kind, text, event_usage = parse(json.dumps(line))
+        if event_usage:
+            usage = event_usage
+        if kind not in ("ignore", "result"):
+            shown += text
+    return shown, usage
+
+
+# Event shapes from the Gemini CLI headless docs and
+# packages/core/src/output/types.ts
+_GEMINI_STREAM = [
+    {"type": "init", "session_id": "abc123", "model": "gemini-2.5-pro"},
+    {"type": "message", "role": "user", "content": "<the whole prompt>"},
+    {
+        "type": "tool_use",
+        "tool_name": "read_file",
+        "tool_id": "read_file-1",
+        "parameters": {"file_path": "RESULTS.md"},
+    },
+    {"type": "tool_result", "tool_id": "read_file-1", "status": "success"},
+    {"type": "message", "role": "assistant", "content": "## Report", "delta": True},
+    {"type": "message", "role": "assistant", "content": "\nAll good.", "delta": True},
+    {
+        "type": "result",
+        "status": "success",
+        "stats": {
+            "total_tokens": 250,
+            "input_tokens": 50,
+            "output_tokens": 200,
+            "cached": 10,
+            "duration_ms": 3000,
+            "tool_calls": 1,
+        },
+    },
+]
+
+
 class TestParseGeminiEvent:
     def test_invalid_json_returns_ignore(self):
         kind, text, usage = _parse_gemini_event("not json")
@@ -408,119 +452,184 @@ class TestParseGeminiEvent:
         assert text == ""
         assert usage is None
 
-    def test_unknown_type_returns_ignore(self):
-        kind, _text, _usage = _parse_gemini_event(json.dumps({"type": "ping"}))
-        assert kind == "ignore"
+    def test_stream_shows_assistant_text_and_tools_but_not_the_prompt(self):
+        shown, usage = _fold_stream(_parse_gemini_event, _GEMINI_STREAM)
+        assert shown == "\n\n> *Using read_file...*\n\n## Report\nAll good."
+        assert "<the whole prompt>" not in shown
+        assert usage == {"input_tokens": 50, "output_tokens": 200}
 
-    def test_text_event(self):
-        event = json.dumps({"type": "text", "content": "Hello from Gemini"})
-        kind, text, _usage = _parse_gemini_event(event)
-        assert kind == "text"
-        assert text == "Hello from Gemini"
+    def test_result_has_no_text_so_streamed_output_is_kept(self):
+        kind, text, _ = _parse_gemini_event(json.dumps(_GEMINI_STREAM[-1]))
+        assert (kind, text) == ("result", "")
 
-    def test_tool_call_event(self):
-        event = json.dumps({"type": "tool_call", "name": "read_file"})
-        kind, text, _usage = _parse_gemini_event(event)
-        assert kind == "tool_use"
-        assert "read_file" in text
-
-    def test_result_event_with_usage(self):
-        event = json.dumps(
-            {
-                "type": "result",
-                "text": "Done.",
-                "usage": {"input_tokens": 100, "output_tokens": 50, "cost_usd": 0.01},
-            }
-        )
-        kind, text, usage = _parse_gemini_event(event)
-        assert kind == "result"
-        assert text == "Done."
-        assert usage["input_tokens"] == 100
-        assert usage["output_tokens"] == 50
-        assert usage["cost_usd"] == 0.01
-
-    def test_result_event_without_usage(self):
-        event = json.dumps({"type": "result", "result": "Finished"})
-        kind, text, usage = _parse_gemini_event(event)
-        assert kind == "result"
-        assert text == "Finished"
-        assert usage is None
-
-    def test_error_event(self):
-        event = json.dumps({"type": "error", "message": "quota exceeded"})
-        kind, text, _usage = _parse_gemini_event(event)
+    def test_failed_result_reports_error_and_usage(self):
+        line = {
+            "type": "result",
+            "status": "error",
+            "error": {"type": "FatalTurnLimitedError", "message": "Turn limit"},
+            "stats": {"input_tokens": 5, "output_tokens": 1},
+        }
+        kind, text, usage = _parse_gemini_event(json.dumps(line))
         assert kind == "error"
-        assert text == "quota exceeded"
+        assert "Turn limit" in text
+        assert usage == {"input_tokens": 5, "output_tokens": 1}
+
+    def test_warning_event(self):
+        line = {"type": "error", "severity": "warning", "message": "Loop detected"}
+        kind, text, _ = _parse_gemini_event(json.dumps(line))
+        assert kind == "error"
+        assert "Warning: Loop detected" in text
 
 
 # ---------------------------------------------------------------------------
 # _parse_codex_event
 # ---------------------------------------------------------------------------
 
+# Event shapes from the Codex non-interactive docs and
+# codex-rs/exec/src/exec_events.rs
+_CODEX_STREAM = [
+    {"type": "thread.started", "thread_id": "0199a213-81c0-7800-8aa1-bbab2a035a53"},
+    {"type": "turn.started"},
+    {
+        "type": "item.completed",
+        "item": {"id": "item_0", "type": "reasoning", "text": "x"},
+    },
+    {
+        "type": "item.started",
+        "item": {
+            "id": "item_1",
+            "type": "command_execution",
+            "command": "bash -lc ls",
+            "aggregated_output": "",
+            "exit_code": None,
+            "status": "in_progress",
+        },
+    },
+    {
+        "type": "item.completed",
+        "item": {
+            "id": "item_1",
+            "type": "command_execution",
+            "command": "bash -lc ls",
+            "aggregated_output": "docs\nsdk",
+            "exit_code": 0,
+            "status": "completed",
+        },
+    },
+    {
+        "type": "item.completed",
+        "item": {
+            "id": "item_2",
+            "type": "file_change",
+            "changes": [{"path": "/w/generate_slides.py", "kind": "add"}],
+            "status": "completed",
+        },
+    },
+    {
+        "type": "item.completed",
+        "item": {
+            "id": "item_3",
+            "type": "agent_message",
+            "text": "Repo contains docs and sdk.",
+        },
+    },
+    {
+        "type": "turn.completed",
+        "usage": {
+            "input_tokens": 24763,
+            "cached_input_tokens": 24448,
+            "output_tokens": 122,
+        },
+    },
+]
+
 
 class TestParseCodexEvent:
     def test_invalid_json_returns_ignore(self):
-        kind, text, usage = _parse_codex_event("garbage")
+        kind, text, usage = _parse_codex_event("not json")
         assert kind == "ignore"
         assert text == ""
         assert usage is None
 
-    def test_unknown_type_returns_ignore(self):
-        kind, _text, _usage = _parse_codex_event(json.dumps({"type": "heartbeat"}))
-        assert kind == "ignore"
-
-    def test_message_with_string_content(self):
-        event = json.dumps({"type": "message", "content": "Hello from Codex"})
-        kind, text, _usage = _parse_codex_event(event)
-        assert kind == "text"
-        assert text == "Hello from Codex"
-
-    def test_message_with_list_content(self):
-        event = json.dumps(
-            {
-                "type": "message",
-                "content": [
-                    {"type": "text", "text": "Part A. "},
-                    {"type": "text", "text": "Part B."},
-                    {"type": "image", "url": "http://x"},
-                ],
-            }
+    def test_stream_shows_agent_message_and_tools(self):
+        shown, usage = _fold_stream(_parse_codex_event, _CODEX_STREAM)
+        assert shown == (
+            "\n\n> *Running `bash -lc ls`...*\n\n"
+            "\n\n> *Changed `generate_slides.py`*\n\n"
+            "Repo contains docs and sdk.\n\n"
         )
-        kind, text, _usage = _parse_codex_event(event)
-        assert kind == "text"
-        assert text == "Part A. Part B."
+        # input_tokens already includes the cached tokens
+        assert usage == {"input_tokens": 24763, "output_tokens": 122}
 
-    def test_function_call_event(self):
-        event = json.dumps({"type": "function_call", "name": "bash"})
-        kind, text, _usage = _parse_codex_event(event)
+    def test_turn_completed_has_no_text_so_streamed_output_is_kept(self):
+        kind, text, _ = _parse_codex_event(json.dumps(_CODEX_STREAM[-1]))
+        assert (kind, text) == ("result", "")
+
+    def test_mcp_tool_call(self):
+        line = {
+            "type": "item.started",
+            "item": {"id": "i", "type": "mcp_tool_call", "server": "m4", "tool": "sql"},
+        }
+        kind, text, _ = _parse_codex_event(json.dumps(line))
         assert kind == "tool_use"
-        assert "bash" in text
+        assert "Using m4.sql..." in text
 
-    def test_result_event(self):
-        event = json.dumps(
-            {
-                "type": "result",
-                "output": "All done.",
-                "usage": {"input_tokens": 200, "output_tokens": 80, "cost_usd": 0.05},
-            }
-        )
-        kind, text, usage = _parse_codex_event(event)
-        assert kind == "result"
-        assert text == "All done."
-        assert usage["input_tokens"] == 200
-        assert usage["cost_usd"] == 0.05
-
-    def test_completed_event(self):
-        event = json.dumps({"type": "completed", "result": "Finished"})
-        kind, text, _usage = _parse_codex_event(event)
-        assert kind == "result"
-        assert text == "Finished"
-
-    def test_error_event(self):
-        event = json.dumps({"type": "error", "message": "model overloaded"})
-        kind, text, _usage = _parse_codex_event(event)
+    @pytest.mark.parametrize(
+        "line, expected",
+        [
+            ({"type": "turn.failed", "error": {"message": "quota"}}, "Error: quota"),
+            ({"type": "error", "message": "stream lost"}, "Error: stream lost"),
+            (
+                {"type": "item.completed", "item": {"type": "error", "message": "x"}},
+                "Warning: x",
+            ),
+        ],
+    )
+    def test_errors(self, line, expected):
+        kind, text, _ = _parse_codex_event(json.dumps(line))
         assert kind == "error"
-        assert text == "model overloaded"
+        assert expected in text
+
+
+# ---------------------------------------------------------------------------
+# Backend argument builders
+# ---------------------------------------------------------------------------
+
+
+class TestBuildArgs:
+    # Over every per-argument limit: Windows' 32,767-char command line and
+    # Linux's 128 KiB MAX_ARG_STRLEN
+    _BIG_PROMPT = "x" * 200_000
+
+    @pytest.mark.parametrize(
+        "build", [_build_claude_args, _build_gemini_args, _build_codex_args]
+    )
+    def test_prompt_goes_through_stdin(self, build):
+        args, stdin = build("cli", self._BIG_PROMPT, "m", "Read", None)
+        assert stdin == self._BIG_PROMPT.encode()
+        assert all(len(a) < 1000 for a in args)
+        assert not any(a.startswith("@") for a in args)
+
+    def test_codex_reads_stdin_outside_git_repos(self):
+        args, _ = _build_codex_args("codex", "p", "gpt-5-codex", "Read", None)
+        assert args[:2] == ["codex", "exec"]
+        assert args[-1] == "-"
+        assert "--skip-git-repo-check" in args
+        assert "--json" in args
+        # Removed from current Codex CLI, which rejects it
+        assert "--full-auto" not in args
+
+    def test_gemini_runs_headless_on_stdin(self):
+        args, _ = _build_gemini_args("gemini", "p", "gemini-2.5-pro", "Read", None)
+        assert args == [
+            "gemini",
+            "--approval-mode",
+            "yolo",
+            "--output-format",
+            "stream-json",
+            "--model",
+            "gemini-2.5-pro",
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -1260,6 +1369,21 @@ class TestRunAgent:
         assert info.extra["paper_workspace"] == str(workspace)
         prompt = mock_proc.stdin.write.call_args.args[0].decode()
         assert str(workspace) in prompt
+
+    @pytest.mark.parametrize("backend", ["gemini", "codex"])
+    async def test_max_turns_rejected_for_backends_without_limit(
+        self, mock_server, study_mgr, monkeypatch, backend
+    ):
+        info = await create_agent_card("report", "s1", mock_server)
+        monkeypatch.setattr("vitrine.dispatch.shutil.which", lambda b: f"/bin/{b}")
+        mock_popen = MagicMock()
+        monkeypatch.setattr("vitrine.dispatch.subprocess.Popen", mock_popen)
+
+        with pytest.raises(ValueError, match="cannot limit the number of turns"):
+            await run_agent(
+                info.card_id, mock_server, {"backend": backend, "budget": 5}
+            )
+        mock_popen.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
