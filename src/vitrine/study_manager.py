@@ -61,6 +61,16 @@ def _read_meta(study_dir: Path) -> dict[str, Any]:
         return {}
 
 
+def _resolve_output_ref(study_dir: Path, output_ref: str | None) -> Path | None:
+    """Turn meta.json's ``output_dir`` value into a path (relative -> study dir)."""
+    if output_ref is None:
+        return None
+    output_path = Path(output_ref)
+    if not output_path.is_absolute():
+        output_path = study_dir / output_path
+    return output_path
+
+
 def _read_label(study_dir: Path) -> str:
     """Read a study's label from its meta.json, falling back to the dir name."""
     return _read_meta(study_dir).get("label", study_dir.name)
@@ -755,15 +765,20 @@ class StudyManager:
     def register_output_dir(
         self, study_label: str, path: str | Path | None = None
     ) -> Path:
-        """Register an output directory for a study.
+        """Register an output directory for a study, or return the registered one.
 
-        If path is None, creates ``{study_dir}/output/`` and stores
-        a relative reference. If path is a string/Path, stores the
-        absolute path as-is.
+        If path is None and the study already has an output directory,
+        returns that directory unchanged, so a script that omits the path
+        never cuts the study off from an external directory registered
+        earlier. If path is None and nothing is registered, creates
+        ``{study_dir}/output/`` and stores a relative reference. If path
+        is a string/Path, stores its absolute path, replacing any earlier
+        registration.
 
         Args:
             study_label: The study label.
-            path: External directory path, or None for self-contained.
+            path: External directory path, or None to keep the registered
+                directory (or use ``{study_dir}/output/`` if there is none).
 
         Returns:
             Path to the output directory (created if needed).
@@ -773,8 +788,13 @@ class StudyManager:
             raise ValueError(f"Study '{study_label}' not found")
 
         study_dir = self._studies_dir / dir_name
+        meta = _read_meta(study_dir)
 
         if path is None:
+            registered = _resolve_output_ref(study_dir, meta.get("output_dir"))
+            if registered is not None:
+                registered.mkdir(parents=True, exist_ok=True)
+                return registered
             output_dir = study_dir / "output"
             output_dir.mkdir(parents=True, exist_ok=True)
             rel = "output"
@@ -783,16 +803,8 @@ class StudyManager:
             output_dir.mkdir(parents=True, exist_ok=True)
             rel = str(output_dir)
 
-        # Persist in meta.json
-        meta_path = study_dir / "meta.json"
-        meta: dict[str, Any] = {}
-        if meta_path.exists():
-            try:
-                meta = json.loads(meta_path.read_text())
-            except (json.JSONDecodeError, OSError):
-                pass
         meta["output_dir"] = rel
-        _atomic_write_json(meta_path, meta)
+        _atomic_write_json(study_dir / "meta.json", meta)
 
         return output_dir
 
@@ -819,16 +831,8 @@ class StudyManager:
         except (json.JSONDecodeError, OSError):
             return None
 
-        output_ref = meta.get("output_dir")
-        if output_ref is None:
-            return None
-
-        # Relative path -> resolve against study dir
-        output_path = Path(output_ref)
-        if not output_path.is_absolute():
-            output_path = study_dir / output_path
-
-        if not output_path.exists():
+        output_path = _resolve_output_ref(study_dir, meta.get("output_dir"))
+        if output_path is None or not output_path.exists():
             return None
 
         return output_path
