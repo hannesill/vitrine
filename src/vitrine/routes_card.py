@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 
+from vitrine._utils import package_version
 from vitrine.artifacts import _serialize_card
 
 if TYPE_CHECKING:
@@ -23,13 +27,40 @@ def _get_static_dir():
     return Path(__file__).parent / "static"
 
 
+_STATIC_URL_RE = re.compile(r'((?:src|href)=")(/static/[^"?#]+)(")')
+
+
+def compute_asset_version(static_dir: Path) -> str:
+    """Return a cache-busting token: package version plus a hash of the static files.
+
+    The hash covers file paths and contents, so editing a JS/CSS file busts the
+    browser cache on the next server start, not only a vitrine upgrade.
+    """
+    digest = hashlib.sha256()
+    if static_dir.is_dir():
+        for path in sorted(p for p in static_dir.rglob("*") if p.is_file()):
+            digest.update(path.relative_to(static_dir).as_posix().encode())
+            digest.update(path.read_bytes())
+    return f"{package_version()}-{digest.hexdigest()[:12]}"
+
+
+def _version_static_urls(html: str, asset_version: str) -> str:
+    """Append ``?v=<asset_version>`` to every /static/ src and href in *html*."""
+    return _STATIC_URL_RE.sub(rf"\1\2?v={asset_version}\3", html)
+
+
 async def index(server: DisplayServer, request: Request) -> Response:
-    """Serve the main index.html page."""
+    """Serve the main index.html page.
+
+    Asset URLs carry a version query and the page itself is always
+    revalidated, so a browser never runs JS/CSS from an older vitrine.
+    """
     static_dir = _get_static_dir()
     index_path = static_dir / "index.html"
     if not index_path.exists():
         return HTMLResponse("<h1>vitrine</h1><p>index.html not found</p>")
-    return HTMLResponse(index_path.read_text())
+    html = _version_static_urls(index_path.read_text(), server.asset_version)
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 
 async def api_cards(server: DisplayServer, request: Request) -> JSONResponse:
