@@ -252,6 +252,19 @@ class TestPortDiscovery:
             srv.stop()
 
 
+class TestUvicornWebSocketSupport:
+    """The real server needs a WebSocket library; TestClient doesn't."""
+
+    def test_uvicorn_resolves_websocket_protocol(self, server):
+        import uvicorn
+
+        # DisplayServer.start() relies on uvicorn's default ws="auto", which
+        # resolves to None when neither websockets nor wsproto is installed.
+        config = uvicorn.Config(app=server._app, ws="auto")
+        config.load()
+        assert config.ws_protocol_class is not None
+
+
 class TestStarletteApp:
     """Test the Starlette app directly using httpx without starting the server."""
 
