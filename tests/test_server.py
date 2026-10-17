@@ -1961,3 +1961,20 @@ class TestAssetVersion:
 
         script.write_text("console.log('new');")
         assert compute_asset_version(tmp_path) != before
+
+    def test_runtime_loaded_scripts_carry_the_version_query(self):
+        # Scripts the board injects later (plotly, html2canvas) must go through
+        # staticUrl(), or a browser can reuse a bundle cached by an older vitrine.
+        import re
+        from pathlib import Path
+
+        import vitrine
+
+        js_dir = Path(vitrine.__file__).parent / "static" / "js"
+        bare_src = re.compile(r"\.src\s*=\s*['\"]/static/[^'\"]*")
+        unversioned = [
+            f"{path.name}: {match}"
+            for path in sorted(js_dir.glob("*.js"))
+            for match in bare_src.findall(path.read_text())
+        ]
+        assert unversioned == []

@@ -129,7 +129,7 @@ function loadPlotly(callback) {
   state.plotlyCallbacks.push(callback);
 
   var script = document.createElement('script');
-  script.src = '/static/vendor/plotly.min.js';
+  script.src = staticUrl('/static/vendor/plotly.min.js');
   script.onload = function() {
     var cbs = state.plotlyCallbacks;
     state.plotlyCallbacks = [];
