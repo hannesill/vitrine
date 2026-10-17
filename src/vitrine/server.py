@@ -33,7 +33,7 @@ import time
 import uuid
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
-from functools import partial
+from functools import cached_property, partial
 from pathlib import Path
 from typing import Any
 
@@ -83,6 +83,20 @@ _REUSE_ADDRESS = os.name == "posix" and sys.platform != "cygwin"
 _PORT_PROBE_TIMEOUT_SECONDS = 0.2
 _DISPLAY_HOST = "vitrine.localhost"
 _SERVER_THREAD_JOIN_TIMEOUT_SECONDS = 3.0
+
+
+class _RevalidatedStaticFiles(StaticFiles):
+    """StaticFiles whose responses the browser must revalidate (ETag -> 304).
+
+    Without Cache-Control, browsers cache by Last-Modified heuristics and can
+    keep running old JS after an upgrade, including scripts the board loads
+    at runtime without a version query (plotly, html2canvas).
+    """
+
+    def file_response(self, *args: Any, **kwargs: Any) -> Response:
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 def _get_display_host() -> str:
@@ -203,6 +217,11 @@ class DisplayServer:
         self._started_at = datetime.now(timezone.utc)
 
         self._app = self._build_app()
+
+    @cached_property
+    def asset_version(self) -> str:
+        """Cache-busting token for static asset URLs, computed once per server."""
+        return routes_card.compute_asset_version(_STATIC_DIR)
 
     def _load_selections(self) -> None:
         """Load persisted selections from disk."""
@@ -332,7 +351,8 @@ class DisplayServer:
 
         # Mount static files if the directory exists
         if _STATIC_DIR.exists():
-            routes.append(Mount("/static", app=StaticFiles(directory=str(_STATIC_DIR))))
+            static_app = _RevalidatedStaticFiles(directory=str(_STATIC_DIR))
+            routes.append(Mount("/static", app=static_app))
 
         return Starlette(routes=routes)
 

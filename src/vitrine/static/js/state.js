@@ -13,6 +13,19 @@ var CONSTANTS = {
   DEFAULT_TIMEOUT: 300,
 };
 
+// Version query the server appended to this script's URL (?v=...). Scripts
+// the board injects at runtime reuse it, so a browser cache from an older
+// vitrine never supplies a stale vendor bundle.
+var ASSET_QUERY = (function() {
+  var src = document.currentScript ? document.currentScript.src : '';
+  var i = src.indexOf('?');
+  return i >= 0 ? src.slice(i) : '';
+})();
+
+function staticUrl(path) {
+  return path + ASSET_QUERY;
+}
+
 // ================================================================
 // STATE & DOM REFERENCES
 // ================================================================

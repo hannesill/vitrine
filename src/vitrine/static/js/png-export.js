@@ -43,7 +43,7 @@ function _loadHtml2Canvas() {
   if (!_html2canvasPromise) {
     _html2canvasPromise = new Promise(function(resolve, reject) {
       var s = document.createElement('script');
-      s.src = '/static/vendor/html2canvas.min.js';
+      s.src = staticUrl('/static/vendor/html2canvas.min.js');
       s.onload = function() { resolve(); };
       s.onerror = function() {
         _html2canvasPromise = null;
