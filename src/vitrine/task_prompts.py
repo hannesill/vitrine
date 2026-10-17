@@ -38,7 +38,7 @@ def build_task_prompt(task: str, study: str, output_dir: Path | None) -> str:
         task: One of ``TASK_SKILLS``.
         study: Study label.
         output_dir: The study's output directory, or None if none is
-            registered yet (the skills register one themselves).
+            registered yet (the skills then register one).
 
     Raises:
         ValueError: If ``task`` is unknown.
@@ -56,4 +56,6 @@ def build_task_prompt(task: str, study: str, output_dir: Path | None) -> str:
     ]
     if output_dir is not None:
         header.append(f"**Output directory:** `{output_dir}`")
+    else:
+        header.append("**Output directory:** none yet")
     return "\n".join(header) + "\n\n---\n\n" + body
