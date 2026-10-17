@@ -773,14 +773,19 @@ def register_output_dir(
     path: str | Path | None = None,
     study: str | None = None,
 ) -> Path:
-    """Register an output directory for a study.
+    """Register an output directory for a study, or return the registered one.
 
-    If path is None, creates and returns ``{study_dir}/output/``
-    (self-contained alongside the study's cards). If path is a
-    string/Path, stores it as an external reference and returns it.
+    If path is None, returns the directory the study already has
+    registered, leaving the registration unchanged; only a study with
+    none gets a new ``{study_dir}/output/`` (self-contained alongside
+    the study's cards). Calling it without a path is therefore safe
+    for a study registered earlier with an external path. If path is
+    a string/Path, stores it as an external reference, replacing any
+    earlier registration, and returns it.
 
     Args:
-        path: External directory path, or None for self-contained.
+        path: External directory path, or None to keep the registered
+            directory (or use ``{study_dir}/output/`` if there is none).
         study: Study label. Creates the study if it doesn't exist.
 
     Returns:

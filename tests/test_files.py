@@ -3,6 +3,7 @@
 Tests cover:
 - register_output_dir() creates directory, stores in meta.json
 - register_output_dir(path=...) external directory
+- register_output_dir() without a path keeps an existing registration
 - list_output_files() returns correct listing
 - get_output_file_path() resolves paths, blocks traversal
 - Server endpoints: /api/studies/{study}/files, files/{path}, files-archive
@@ -75,6 +76,66 @@ class TestRegisterOutputDir:
         out1 = manager.register_output_dir("idem-test")
         out2 = manager.register_output_dir("idem-test")
         assert out1 == out2
+
+    def test_no_path_without_registration_creates_study_output(self, manager):
+        manager.get_or_create_study("fresh")
+        study_dir = manager._studies_dir / manager._label_to_dir["fresh"]
+        assert "output_dir" not in json.loads((study_dir / "meta.json").read_text())
+
+        output = manager.register_output_dir("fresh")
+
+        assert output == study_dir / "output"
+        assert output.is_dir()
+        meta = json.loads((study_dir / "meta.json").read_text())
+        assert meta["output_dir"] == "output"
+
+    def test_no_path_keeps_external_registration(self, manager, tmp_path):
+        ext_dir = tmp_path / "sepsis"
+        manager.get_or_create_study("sepsis-v1")
+        manager.register_output_dir("sepsis-v1", path=str(ext_dir))
+        (ext_dir / "scripts").mkdir()
+        (ext_dir / "scripts" / "01_cohort.py").write_text("print('cohort')")
+        study_dir = manager._studies_dir / manager._label_to_dir["sepsis-v1"]
+        meta_before = (study_dir / "meta.json").read_text()
+
+        output = manager.register_output_dir("sepsis-v1")
+
+        assert output == ext_dir.resolve()
+        assert (study_dir / "meta.json").read_text() == meta_before
+        assert not (study_dir / "output").exists()
+        assert manager.get_output_dir("sepsis-v1") == ext_dir.resolve()
+        paths = [f["path"] for f in manager.list_output_files("sepsis-v1")]
+        assert "scripts/01_cohort.py" in paths
+
+    def test_no_path_recreates_missing_registered_dir(self, manager, tmp_path):
+        ext_dir = tmp_path / "gone"
+        manager.get_or_create_study("gone-test")
+        manager.register_output_dir("gone-test", path=str(ext_dir))
+        ext_dir.rmdir()
+
+        output = manager.register_output_dir("gone-test")
+
+        assert output == ext_dir.resolve()
+        assert output.is_dir()
+        study_dir = manager._studies_dir / manager._label_to_dir["gone-test"]
+        meta = json.loads((study_dir / "meta.json").read_text())
+        assert meta["output_dir"] == str(ext_dir.resolve())
+
+    def test_explicit_path_reregisters(self, manager, tmp_path):
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        manager.get_or_create_study("move-test")
+        manager.register_output_dir("move-test")
+        manager.register_output_dir("move-test", path=str(first))
+
+        output = manager.register_output_dir("move-test", path=str(second))
+
+        assert output == second.resolve()
+        assert manager.get_output_dir("move-test") == second.resolve()
+        study_dir = manager._studies_dir / manager._label_to_dir["move-test"]
+        meta = json.loads((study_dir / "meta.json").read_text())
+        assert meta["output_dir"] == str(second.resolve())
+        assert manager.register_output_dir("move-test") == second.resolve()
 
 
 class TestGetOutputDir:
@@ -390,3 +451,16 @@ class TestPublicRegisterOutputDir:
         output = mgr.register_output_dir("api-test")
         assert output.exists()
         assert output.is_dir()
+
+    def test_no_path_call_keeps_external_dir(self, vitrine_dir, tmp_path, monkeypatch):
+        import vitrine
+        import vitrine._state as _st
+
+        monkeypatch.setattr(_st, "_study_manager", StudyManager(vitrine_dir))
+        ext_dir = tmp_path / "data" / "sepsis"
+
+        registered = vitrine.register_output_dir(str(ext_dir), study="sepsis-v1")
+        again = vitrine.register_output_dir(study="sepsis-v1")
+
+        assert registered == ext_dir.resolve()
+        assert again == registered
