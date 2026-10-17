@@ -280,10 +280,6 @@ async def _handle_delete(
 ) -> None:
     """Handle card delete/restore via WebSocket."""
     deleted = payload.get("deleted", True)
-    if deleted and card_id in server.dispatches:
-        from vitrine.dispatch import cancel_agent
-
-        await cancel_agent(card_id, server)
     store = server._resolve_store(card_id)
     if store is not None:
         updates: dict[str, Any] = {"deleted": deleted}

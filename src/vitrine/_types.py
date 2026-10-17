@@ -8,11 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
-
-if TYPE_CHECKING:
-    from vitrine.dispatch import DispatchInfo
-    from vitrine.study_manager import StudyManager
+from typing import Any
 
 
 class CardType(str, Enum):
@@ -365,20 +361,3 @@ class DisplayHandle(str):
         obj.url = url
         obj.study = study
         return obj
-
-
-# ---------------------------------------------------------------------------
-# DispatchHost protocol — abstracts what dispatch.py needs from the server
-# ---------------------------------------------------------------------------
-
-
-@runtime_checkable
-class DispatchHost(Protocol):
-    """Protocol describing the server surface used by the dispatch module."""
-
-    study_manager: StudyManager | None
-
-    @property
-    def dispatches(self) -> dict[str, DispatchInfo]: ...
-
-    async def broadcast(self, message: dict[str, Any]) -> None: ...

@@ -77,10 +77,5 @@ function handleMessage(msg) {
     case 'display.replay_done':
       state.liveMode = true;
       break;
-    case 'agent.started':
-    case 'agent.completed':
-    case 'agent.failed':
-      if (typeof handleAgentMessage === 'function') handleAgentMessage(msg);
-      break;
   }
 }
