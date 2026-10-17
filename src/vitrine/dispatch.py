@@ -150,6 +150,8 @@ def _parse_gemini_event(line: str) -> tuple[str, str, dict[str, Any] | None]:
     ``delta``), ``tool_use``, ``tool_result``, ``error`` (non-fatal, with
     ``severity``) and ``result`` (``status``, ``error``, ``stats``). The
     response text arrives only as assistant messages, never in ``result``.
+    A ``result`` with status ``error`` is returned as ``"fatal"`` so the run
+    fails even if the CLI exits 0.
     """
     try:
         obj = json.loads(line)
@@ -183,7 +185,7 @@ def _parse_gemini_event(line: str) -> tuple[str, str, dict[str, Any] | None]:
         )
         if obj.get("status") == "error":
             message = (obj.get("error") or {}).get("message", "Unknown error")
-            return ("error", _status_line(f"Error: {message}"), usage_data)
+            return ("fatal", message, usage_data)
         return ("result", "", usage_data)
 
     return ("ignore", "", None)
@@ -197,6 +199,7 @@ def _parse_codex_event(line: str) -> tuple[str, str, dict[str, Any] | None]:
     ``turn.failed`` and ``error``. Items carry a ``type`` such as
     ``agent_message``, ``reasoning``, ``command_execution``, ``file_change``,
     ``mcp_tool_call``, ``web_search``, ``todo_list`` or ``error``.
+    ``turn.failed`` is returned as ``"fatal"`` so the run fails.
     """
     try:
         obj = json.loads(line)
@@ -239,7 +242,7 @@ def _parse_codex_event(line: str) -> tuple[str, str, dict[str, Any] | None]:
 
     if evt_type == "turn.failed":
         message = (obj.get("error") or {}).get("message", "Unknown error")
-        return ("error", _status_line(f"Error: {message}"), None)
+        return ("fatal", message, None)
 
     if evt_type == "error":
         message = obj.get("message", "Unknown error")
@@ -735,11 +738,23 @@ async def run_agent(
         cwd=cwd,
     )
 
-    # Feed prompt via stdin if the builder provided a payload, then close
-    if stdin_payload and proc.stdin:
-        proc.stdin.write(stdin_payload)
+    # Feed prompt via stdin if the builder provided a payload, then close.
+    # A CLI that exits during startup (bad flag, config or auth) closes the
+    # pipe first (BrokenPipeError, or EINVAL on Windows); the monitor still
+    # reaps it and shows the failure.
     if proc.stdin:
-        proc.stdin.close()
+        try:
+            if stdin_payload:
+                proc.stdin.write(stdin_payload)
+            proc.stdin.close()
+        except OSError:
+            logger.warning(
+                f"{backend_cfg.display_name} exited before reading its prompt"
+            )
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
 
     info.process = proc
     info.pid = proc.pid
@@ -794,7 +809,8 @@ def _parse_stream_event(line: str) -> tuple[str, str, dict[str, Any] | None]:
     """Parse a stream-json line and return (event_kind, display_text, usage).
 
     event_kind is one of: "text", "tool_use", "tool_result", "error",
-    "result", "ignore".
+    "fatal", "result", "ignore". Backend parsers use the same kinds;
+    "fatal" fails the run with display_text as its error.
     display_text is the content to show for that event (may be empty).
     usage is a dict with token/cost info if available, else None.
     """
@@ -933,6 +949,8 @@ async def _stream_monitor(info: DispatchInfo, server: DispatchHost) -> None:
     loop = asyncio.get_event_loop()
     accumulated = ""
     final_result: str | None = None
+    # Set by a "fatal" event: the run failed even if the CLI exits 0
+    fatal_error: str | None = None
     last_update = 0.0
     config = _TASK_CONFIG.get(info.task, ("", "", ""))
     _, card_title, _ = config
@@ -992,6 +1010,10 @@ async def _stream_monitor(info: DispatchInfo, server: DispatchHost) -> None:
                 )
                 usage["output_tokens"] += event_usage.get("output_tokens", 0)
 
+            if kind == "fatal":
+                fatal_error = text or "Unknown error"
+                continue
+
             if kind == "ignore" or not text:
                 continue
 
@@ -1024,7 +1046,7 @@ async def _stream_monitor(info: DispatchInfo, server: DispatchHost) -> None:
             end_dt = datetime.fromisoformat(completed_at)
             duration = (end_dt - start_dt).total_seconds()
 
-        if returncode == 0:
+        if returncode == 0 and fatal_error is None:
             info.status = "completed"
             display = final_result or accumulated
             if not display.strip():
@@ -1052,7 +1074,7 @@ async def _stream_monitor(info: DispatchInfo, server: DispatchHost) -> None:
             )
         else:
             info.status = "failed"
-            info.error = f"Process exited with code {returncode}"
+            info.error = fatal_error or f"Process exited with code {returncode}"
             error_output = accumulated + f"\n\n---\n**Error:** {info.error}"
             await _update_agent_card(
                 info.card_id,
