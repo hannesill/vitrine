@@ -1637,29 +1637,34 @@ function formatElapsed(isoTimestamp) {
 
 function buildCardPrompt(card) {
   var header = '## ' + (card.title || 'Untitled') + '  [card:' + card.card_id + (card.study ? ', study:' + card.study : '') + ']\n\n';
+  // confirm()/ask() cards stay markdown and controls cards stay table/plotly,
+  // so the researcher's response is appended for every card type.
+  return header + _buildCardBody(card) + _buildResponsePrompt(card);
+}
 
+function _buildCardBody(card) {
   if (card.card_type === 'table' && card.preview && card.preview.columns) {
-    return header + _buildTablePrompt(card.preview);
+    return _buildTablePrompt(card.preview);
   }
   if (card.card_type === 'markdown' && card.preview && card.preview.text) {
-    return header + card.preview.text + '\n';
+    return card.preview.text + '\n';
   }
   if (card.card_type === 'keyvalue' && card.preview && card.preview.items) {
-    return header + _buildKeyValuePrompt(card.preview.items);
+    return _buildKeyValuePrompt(card.preview.items);
   }
   if (card.card_type === 'plotly' && card.preview && card.preview.spec) {
-    return header + _buildPlotlyPrompt(card.preview.spec);
+    return _buildPlotlyPrompt(card.preview.spec);
   }
   if (card.card_type === 'decision' && card.preview) {
-    return header + _buildDecisionPrompt(card);
+    return _buildDecisionPrompt(card);
   }
   if (card.card_type === 'agent' && card.preview) {
-    return header + _buildAgentPrompt(card.preview);
+    return _buildAgentPrompt(card.preview);
   }
   if (card.card_type === 'image') {
-    return header + '*(image — not copyable as text)*\n';
+    return '*(image — not copyable as text)*\n';
   }
-  return header;
+  return '';
 }
 
 function _buildTablePrompt(preview) {
@@ -1762,16 +1767,22 @@ function _buildDecisionPrompt(card) {
       });
     }
   });
-  if (card.response_action) {
-    lines.push('\n**Response:** ' + card.response_action);
-    if (card.response_values) {
-      Object.keys(card.response_values).forEach(function(k) {
-        lines.push('- ' + k + ': ' + card.response_values[k]);
-      });
-    }
-    if (card.response_message) {
-      lines.push('*Note:* ' + card.response_message);
-    }
+  return lines.join('\n') + '\n';
+}
+
+function _buildResponsePrompt(card) {
+  if (!card.response_action) return '';
+  var lines = ['\n**Response:** ' + card.response_action];
+  if (card.response_values) {
+    Object.keys(card.response_values).forEach(function(k) {
+      lines.push('- ' + k + ': ' + card.response_values[k]);
+    });
+  }
+  if (card.response_summary) {
+    lines.push('*Selection:* ' + card.response_summary);
+  }
+  if (card.response_message) {
+    lines.push('*Note:* ' + card.response_message);
   }
   return lines.join('\n') + '\n';
 }
@@ -1784,5 +1795,8 @@ function _buildAgentPrompt(preview) {
   if (preview.task) lines.push('Task: ' + preview.task);
   if (preview.duration != null) lines.push('Duration: ' + formatAgentDuration(preview.duration));
   if (preview.error) lines.push('Error: ' + preview.error);
+  if ((status === 'completed' || status === 'failed') && preview.output) {
+    lines.push('', preview.output);
+  }
   return lines.join('\n') + '\n';
 }
