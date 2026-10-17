@@ -141,7 +141,6 @@ class StudyManager:
         self._stores: dict[str, ArtifactStore] = {}  # dir_name -> ArtifactStore
         self._label_to_dir: dict[str, str] = {}  # user_label -> dir_name
         self._card_index: dict[str, str] = {}  # card_id -> dir_name
-        self._all_cards_cache: list[CardDescriptor] | None = None
         # Label for cards published without a study, set on first use, and the
         # start time that finds that study again after another process renames it
         self._default_label: str | None = None
@@ -217,7 +216,6 @@ class StudyManager:
         self._stores[dir_name] = store
         self._label_to_dir[study] = dir_name
 
-        self._all_cards_cache = None
         logger.debug(f"Created study '{study}' -> {dir_name}")
         return study, store
 
@@ -385,7 +383,6 @@ class StudyManager:
         for card_id, dn in self._card_index.items():
             if dn == old_dir_name:
                 self._card_index[card_id] = new_dir_name
-        self._all_cards_cache = None
 
     def _forget(self, label: str, dir_name: str) -> None:
         """Drop a study that is gone from disk from in-memory state."""
@@ -394,7 +391,6 @@ class StudyManager:
         to_remove = [cid for cid, dn in self._card_index.items() if dn == dir_name]
         for cid in to_remove:
             del self._card_index[cid]
-        self._all_cards_cache = None
 
     def _find_on_disk(self, label: str) -> str | None:
         """Pick up a study that has this label on disk but not in memory.
@@ -558,10 +554,8 @@ class StudyManager:
                 return []
             return store.list_cards()
 
-        # All cards from all studies (with cache)
-        if self._all_cards_cache is not None:
-            return list(self._all_cards_cache)
-
+        # Not cached: ArtifactStore.update_card() and other processes change
+        # card descriptors on disk without telling this manager.
         all_cards: list[CardDescriptor] = []
         for dir_name in self._label_to_dir.values():
             store = self._stores.get(dir_name)
@@ -570,8 +564,7 @@ class StudyManager:
 
         # Sort by timestamp
         all_cards.sort(key=lambda c: c.timestamp or "")
-        self._all_cards_cache = all_cards
-        return list(all_cards)
+        return all_cards
 
     def get_store_for_card(self, card_id: str) -> ArtifactStore | None:
         """Look up which ArtifactStore contains a given card.
@@ -648,8 +641,7 @@ class StudyManager:
                 "current_selections": {},
             }
 
-        # Filter the all-studies cache instead of reading from disk directly
-        all_cards = [c for c in self.list_all_cards() if c.study == study]
+        all_cards = self._stores[dir_name].list_cards(study=study)
         # Exclude soft-deleted cards from context
         cards = [c for c in all_cards if not c.deleted]
         card_summaries = []
@@ -727,7 +719,6 @@ class StudyManager:
             dir_name: The study directory name containing this card.
         """
         self._card_index[card_id] = dir_name
-        self._all_cards_cache = None
 
     def store_selection(self, selection_id: str, rows: list, columns: list) -> Path:
         """Store a selection as a Parquet artifact in the vitrine-level dir.
@@ -986,9 +977,7 @@ class StudyManager:
 
         Only loads studies not already known in memory. Safe to call frequently
         (e.g. before listing studies) since it skips known directories.
-        Invalidates the all-cards cache so the next list_all_cards() rebuilds.
         """
-        self._all_cards_cache = None
         for study_dir in self._study_dirs():
             dir_name = study_dir.name
             if dir_name in self._stores:
@@ -1012,6 +1001,5 @@ class StudyManager:
         # Index cards
         for card in store.list_cards():
             self._card_index[card.card_id] = dir_name
-        self._all_cards_cache = None
 
         return store
