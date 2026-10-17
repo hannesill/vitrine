@@ -594,6 +594,15 @@ class TestParseCodexEvent:
         assert expected in text
 
 
+@pytest.mark.parametrize(
+    "parse", [_parse_stream_event, _parse_gemini_event, _parse_codex_event]
+)
+@pytest.mark.parametrize("line", ["42", "null", '"text"', "[1, 2]", "true"])
+def test_json_that_is_not_an_event_is_ignored(parse, line):
+    """stderr shares the stream, so a line can be JSON that is not an object."""
+    assert parse(line) == ("ignore", "", None)
+
+
 # ---------------------------------------------------------------------------
 # Backend argument builders
 # ---------------------------------------------------------------------------
@@ -1724,6 +1733,37 @@ class TestStreamMonitor:
         assert "trace line 60\n" in output
         assert "trace line 99\n```" in output
         assert "\x1b" not in output
+
+    async def test_malformed_events_do_not_stop_monitoring(
+        self, mock_server, study_mgr
+    ):
+        """An event the parser chokes on is skipped; the run still completes."""
+        lines = [
+            json.dumps({"type": "item.completed", "item": "not an object"}),
+            "null",
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": "Done."},
+                }
+            ),
+            json.dumps({"type": "turn.completed", "usage": {"output_tokens": 3}}),
+        ]
+        info, card = await self._monitor(
+            mock_server, study_mgr, "mon-bad", "codex", lines, returncode=0
+        )
+
+        assert info.status == "completed"
+        assert card.preview["output"].strip() == "Done."
+        assert card.preview["usage"]["output_tokens"] == 3
+
+    async def test_non_object_json_counts_as_cli_output(self, mock_server, study_mgr):
+        lines = ["null", "Error: not logged in"]
+        _, card = await self._monitor(
+            mock_server, study_mgr, "mon-null", "gemini", lines, returncode=1
+        )
+
+        assert "```\nnull\nError: not logged in\n```" in card.preview["output"]
 
     def test_cli_output_fence_survives_backticks_in_output(self):
         output = _with_diagnostics("Body", ["```", "``code``"], "Claude Code")

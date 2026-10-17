@@ -143,6 +143,19 @@ def _status_line(text: str) -> str:
     return f"\n\n> *{text}*\n\n"
 
 
+def _load_event(line: str) -> dict[str, Any] | None:
+    """Decode a stream-json line, or None if it is not a JSON object.
+
+    stderr is merged into stdout, so a line can be any text, including JSON
+    that is not an event (e.g. ``42`` or ``null``).
+    """
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
 def _parse_claude_event(line: str) -> tuple[str, str, dict[str, Any] | None]:
     """Parse a Claude Code stream-json line."""
     return _parse_stream_event(line)
@@ -158,9 +171,8 @@ def _parse_gemini_event(line: str) -> tuple[str, str, dict[str, Any] | None]:
     A ``result`` with status ``error`` is returned as ``"fatal"`` so the run
     fails even if the CLI exits 0.
     """
-    try:
-        obj = json.loads(line)
-    except (json.JSONDecodeError, ValueError):
+    obj = _load_event(line)
+    if obj is None:
         return ("ignore", "", None)
 
     evt_type = obj.get("type", "")
@@ -206,9 +218,8 @@ def _parse_codex_event(line: str) -> tuple[str, str, dict[str, Any] | None]:
     ``mcp_tool_call``, ``web_search``, ``todo_list`` or ``error``.
     ``turn.failed`` is returned as ``"fatal"`` so the run fails.
     """
-    try:
-        obj = json.loads(line)
-    except (json.JSONDecodeError, ValueError):
+    obj = _load_event(line)
+    if obj is None:
         return ("ignore", "", None)
 
     evt_type = obj.get("type", "")
@@ -819,9 +830,8 @@ def _parse_stream_event(line: str) -> tuple[str, str, dict[str, Any] | None]:
     display_text is the content to show for that event (may be empty).
     usage is a dict with token/cost info if available, else None.
     """
-    try:
-        obj = json.loads(line)
-    except (json.JSONDecodeError, ValueError):
+    obj = _load_event(line)
+    if obj is None:
         return ("ignore", "", None)
 
     evt_type = obj.get("type", "")
@@ -953,19 +963,17 @@ _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 
 def _diagnostic_line(raw: str) -> str | None:
-    """Return a non-JSON output line for the diagnostics tail, else None.
+    """Return an output line that is not an event for the diagnostics tail.
 
     The child's stderr is merged into stdout, so these lines are where a CLI
-    reports usage errors, auth failures and crashes.
+    reports usage errors, auth failures and crashes. Events return None.
     """
     line = _ANSI_ESCAPE.sub("", raw).rstrip()
-    try:
-        json.loads(line)
-    except ValueError:
-        if len(line) > _DIAGNOSTIC_LINE_CHARS:
-            line = line[:_DIAGNOSTIC_LINE_CHARS] + "..."
-        return line
-    return None
+    if _load_event(line) is not None:
+        return None
+    if len(line) > _DIAGNOSTIC_LINE_CHARS:
+        line = line[:_DIAGNOSTIC_LINE_CHARS] + "..."
+    return line
 
 
 def _with_diagnostics(output: str, diagnostics: Iterable[str], source: str) -> str:
@@ -1027,7 +1035,16 @@ async def _stream_monitor(info: DispatchInfo, server: DispatchHost) -> None:
             if not line:
                 continue
 
-            kind, text, event_usage = parse_event(line)
+            try:
+                kind, text, event_usage = parse_event(line)
+            except Exception:
+                # A malformed event must not stop monitoring a running agent
+                logger.warning(
+                    f"Skipped unparseable output from agent {info.card_id}: "
+                    f"{line[:200]}",
+                    exc_info=True,
+                )
+                continue
             if kind == "ignore":
                 diagnostic = _diagnostic_line(raw)
                 if diagnostic is not None:
