@@ -1081,10 +1081,102 @@ class TestStudyContext:
         assert "decisions_made" in ctx
         assert "current_selections" in ctx
 
-    def test_study_context_nonexistent(self, study_manager):
+    def test_study_context_nonexistent(self, study_manager, monkeypatch):
+        monkeypatch.setattr(_client_mod, "_discover_server", lambda: None)
         ctx = display.study_context("nonexistent")
         assert ctx["card_count"] == 0
         assert ctx["cards"] == []
+
+    def test_study_context_attaches_to_running_server(
+        self, study_manager, monkeypatch, tmp_path
+    ):
+        """A fresh process uses a running server's live context."""
+        import urllib.request
+
+        info = _server_metadata(tmp_path / ".server.json")
+        monkeypatch.setattr(_client_mod, "_discover_server", lambda: info)
+        remote_ctx = {"study": "s", "card_count": 0, "current_selections": {"c": [1]}}
+        seen = []
+
+        class FakeResponse:
+            def read(self):
+                return json.dumps(remote_ctx).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        def fake_urlopen(req, timeout=None):
+            seen.append(req.full_url)
+            return FakeResponse()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+        assert display.study_context("s") == remote_ctx
+        assert seen == [f"{info['api_url']}/api/studies/s/context"]
+
+    def test_study_context_attach_joins_as_owner(
+        self, study_manager, monkeypatch, tmp_path
+    ):
+        """Attaching gives the server this host's owner, as show() would.
+
+        A later show() takes the fast path on this connection and would never
+        join on its own.
+        """
+        monkeypatch.setenv("VITRINE_OWNER_PID", "4242")
+        info = _server_metadata(
+            tmp_path / ".server.json", owners=[{"pid": 111, "start_time": None}]
+        )
+        monkeypatch.setattr(_client_mod, "_discover_server", lambda: info)
+        added = []
+        monkeypatch.setattr(
+            _client_mod,
+            "_add_server_owner",
+            lambda info, pid: added.append(pid) or [111, pid],
+        )
+
+        def offline(*a, **kw):
+            raise OSError("no network in tests")
+
+        monkeypatch.setattr("urllib.request.urlopen", offline)
+
+        display.study_context("s")
+
+        assert added == [4242]
+        assert _st._remote_url == info["api_url"]
+
+    def test_study_context_skips_a_server_stopping_for_its_owners(
+        self, study_manager, monkeypatch, tmp_path
+    ):
+        from vitrine._utils import OwnerRejected
+
+        monkeypatch.setenv("VITRINE_OWNER_PID", "4242")
+        info = _server_metadata(tmp_path / ".server.json")
+        monkeypatch.setattr(_client_mod, "_discover_server", lambda: info)
+
+        def stopping(info, pid):
+            raise OwnerRejected("stopping", "server is stopping")
+
+        monkeypatch.setattr(_client_mod, "_add_server_owner", stopping)
+
+        ctx = display.study_context("s")
+
+        assert ctx["card_count"] == 0
+        assert _st._remote_url is None
+
+    def test_study_context_does_not_start_server(self, study_manager, monkeypatch):
+        """study_context() never spawns a server just to read context."""
+        monkeypatch.setattr(_client_mod, "_discover_server", lambda: None)
+
+        def _fail(**kw):
+            raise AssertionError("study_context must not start a server")
+
+        monkeypatch.setattr(_client_mod, "_start_process", _fail)
+        display.study_context("s")
+        assert _st._server is None
+        assert _st._remote_url is None
 
 
 class TestCleanStudies:
@@ -1502,6 +1594,86 @@ class TestWaitFor:
         result = display.wait_for(card_id, timeout=1)
         assert result.action == "timeout"
 
+    def test_wait_for_fresh_process_polls_remote(self, monkeypatch, tmp_path):
+        """wait_for() from a fresh process discovers the server and polls it.
+
+        Module state is empty (as reset_module_state leaves it), the card only
+        exists on disk, and a persistent server is discoverable via its PID
+        file. wait_for() must connect, re-enable the card and long-poll the
+        remote response endpoint instead of returning timeout immediately.
+        """
+        import urllib.request
+
+        from vitrine.renderer import render
+
+        vitrine_dir = tmp_path / "vitrine"
+        vitrine_dir.mkdir()
+        monkeypatch.setenv("VITRINE_DATA_DIR", str(vitrine_dir))
+
+        # An earlier process posted a blocking card that timed out
+        earlier = StudyManager(vitrine_dir)
+        label, earlier_store = earlier.get_or_create_study("s")
+        card = render(
+            "Pick one", title="Adjusted model", study=label, store=earlier_store
+        )
+        earlier_store.update_card(card.card_id, response_requested=True, timeout=5)
+
+        info = _server_metadata(vitrine_dir / ".server.json")
+        api_url = info["api_url"]
+        monkeypatch.setattr(_client_mod, "_discover_server", lambda: info)
+
+        requests = []
+
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, body):
+                self._body = body
+
+            def read(self):
+                return json.dumps(self._body).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        def fake_urlopen(req, timeout=None):
+            requests.append(req)
+            if "/api/response/" in req.full_url:
+                return FakeResponse(
+                    {"action": "confirm", "card_id": card.card_id, "message": "ok"}
+                )
+            return FakeResponse({})
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+        assert _st._server is None and _st._remote_url is None
+        result = display.wait_for(card.card_id, timeout=600)
+
+        assert result.action == "confirm"
+        assert result.message == "ok"
+        assert _st._remote_url == api_url
+
+        urls = [r.full_url for r in requests]
+        assert urls == [
+            f"{api_url}/api/command",
+            f"{api_url}/api/response/{card.card_id}?timeout=600",
+        ]
+        update = json.loads(requests[0].data)
+        assert update["type"] == "update"
+        assert update["card_id"] == card.card_id
+        bearer = f"Bearer {info['token']}"
+        assert all(r.get_header("Authorization") == bearer for r in requests)
+
+    def test_wait_for_card_response_errors_without_server(self):
+        """No server and no remote URL is an error, not a silent timeout."""
+        result = _client_mod._wait_for_card_response("abc123", timeout=600)
+        assert result["action"] == "error"
+        assert result["card_id"] == "abc123"
+        assert "server" in result["message"].lower()
+
 
 class TestExportWrapper:
     """Tests for the export() wrapper function.
@@ -1559,6 +1731,16 @@ class TestAskTimeout:
         }
         result = display.ask("Which score?", ["SOFA", "APACHE III"])
         assert result == "timeout"
+
+    def test_ask_returns_error_not_the_error_message(self, store, mock_server):
+        """An error's message is its reason, not text the researcher typed."""
+        mock_server._mock_response = {
+            "action": "error",
+            "card_id": "test",
+            "message": "No vitrine server connected",
+        }
+        result = display.ask("Which score?", ["SOFA", "APACHE III"])
+        assert result == "error"
 
 
 # ================================================================

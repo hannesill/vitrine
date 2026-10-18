@@ -267,7 +267,7 @@ class DisplayResponse:
     """ID of the card the response is for."""
 
     message: str | None = None
-    """Optional text message from the user."""
+    """Optional text message from the user, or the reason when action is 'error'."""
 
     summary: str = ""
     """Brief summary of the selected data."""

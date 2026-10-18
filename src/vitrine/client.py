@@ -471,6 +471,26 @@ def _ensure_started(
         _st._server.start(open_browser=open_browser)
 
 
+def _attach_existing_server() -> None:
+    """Connect to an already-running persistent server without starting one.
+
+    For read helpers that should use live server state when a server exists
+    but fall back to on-disk state otherwise. No-op if already connected.
+    Joins as owner like ``_ensure_started`` does, since a later ``show()``
+    takes its fast path on this connection and never joins itself.
+    """
+    with _st._lock:
+        if _st._remote_url is not None:
+            return
+        if _st._server is not None and _st._server.is_running:
+            return
+        info = _discover_server()
+        if info and _join_as_owner(info):
+            _st._remote_url = info.get("api_url", info["url"])
+            _st._auth_token = info.get("token")
+            _st._session_id = info["session_id"]
+
+
 def start(
     port: int = 7741,
     open_browser: bool = True,
@@ -730,6 +750,8 @@ def _wait_for_card_response(card_id: str, timeout: float) -> dict[str, Any]:
     """Wait for a browser response to a blocking card.
 
     Uses in-process server if available, otherwise polls remote endpoint.
+    Returns an ``"error"`` action (not ``"timeout"``) when neither is
+    available, since nothing could have answered the card.
     """
     with _st._lock:
         server, url, token = _st._server, _st._remote_url, _st._auth_token
@@ -740,7 +762,12 @@ def _wait_for_card_response(card_id: str, timeout: float) -> dict[str, Any]:
     if url and token:
         return _poll_remote_response(card_id, timeout)
 
-    return {"action": "timeout", "card_id": card_id}
+    logger.warning(f"No display server connected while waiting for card {card_id}")
+    return {
+        "action": "error",
+        "card_id": card_id,
+        "message": "No vitrine server connected; start one with `vitrine start`",
+    }
 
 
 def _study_url(study: str | None) -> str | None:
