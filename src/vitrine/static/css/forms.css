@@ -290,6 +290,34 @@
   transition: border-color 0.15s;
 }
 
+.question-dropdown {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.question-select {
+  min-width: 220px;
+  max-width: 100%;
+  padding: 6px 8px;
+  border: var(--border-width, 1px) solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  font-family: var(--font);
+}
+
+.question-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.card.responded .question-select {
+  pointer-events: none;
+  opacity: 0.6;
+}
+
 .question-other-input:focus {
   border-color: var(--accent);
 }

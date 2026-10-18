@@ -10,10 +10,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, Response
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
 from vitrine._utils import package_version
 from vitrine.artifacts import _serialize_card
+from vitrine.images import MEDIA_TYPES
 
 if TYPE_CHECKING:
     from vitrine._types import CardDescriptor
@@ -352,6 +353,33 @@ async def api_artifact(server: DisplayServer, request: Request) -> Response:
         return JSONResponse(
             {"error": f"No artifact for card {card_id}"}, status_code=404
         )
+
+
+async def api_image(server: DisplayServer, request: Request) -> Response:
+    """Return one of an image card's files: an image, thumbnail, or overlay.
+
+    Names carry a hash of their content, so the browser may keep them for good.
+    """
+    card_id = request.path_params["card_id"]
+    name = request.path_params["name"]
+    store = server._resolve_store(card_id)
+    path = store.card_file_path(card_id, name) if store is not None else None
+    if path is None or not path.is_file():
+        return JSONResponse(
+            {"error": f"No image {name} for card {card_id}"}, status_code=404
+        )
+    headers = {
+        "Cache-Control": "private, max-age=31536000, immutable",
+        "X-Content-Type-Options": "nosniff",
+    }
+    if path.suffix == ".svg":
+        # Sanitized when stored; opened as a page, it still runs nothing.
+        headers["Content-Security-Policy"] = (
+            "default-src 'none'; style-src 'unsafe-inline'; img-src data:"
+        )
+    return FileResponse(
+        path, media_type=MEDIA_TYPES[path.suffix.lstrip(".")], headers=headers
+    )
 
 
 async def api_session(server: DisplayServer, request: Request) -> JSONResponse:

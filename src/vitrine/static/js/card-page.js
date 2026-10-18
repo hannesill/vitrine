@@ -174,7 +174,7 @@ function renderCardPage(pageEl, data) {
   var cur = cpSection(versions.length > 1 ? 'Current version' : 'Content',
     versions.length > 1 ? 'Version ' + current.number + ' \u00b7 ' + cpTime(current.createdAt) : null);
   var content = cpEl('div', 'card-page-content');
-  renderVersionContent(content, card);
+  renderVersionContent(content, card, true);
   cur.appendChild(content);
   cur.appendChild(buildVersionFacts(current, lookup));
   pageEl.appendChild(cur);
@@ -569,7 +569,8 @@ function describeChange(a, b, sessions) {
 // ----------------------------------------------------------------
 // Content of a version, from what its index entry keeps inline
 // ----------------------------------------------------------------
-function renderVersionContent(container, card) {
+// `live` is the card as it is now, whose files the server still serves.
+function renderVersionContent(container, card, live) {
   var preview = card.preview || {};
   switch (card.card_type) {
     case 'markdown':
@@ -585,7 +586,8 @@ function renderVersionContent(container, card) {
       renderStaticChart(container, preview);
       break;
     case 'image':
-      if (preview.data) renderImage(container, card);
+      // Pictures are files named by the card; an earlier version's are gone.
+      if (preview.data || (live && preview.images)) renderImage(container, card);
       else container.appendChild(cpEl('div', 'card-page-muted', 'No image kept for this version.'));
       break;
     case 'decision':

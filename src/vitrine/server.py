@@ -264,6 +264,7 @@ class DisplayServer:
                 methods=["POST"],
             ),
             Route("/api/artifact/{card_id}", _r(routes_card.api_artifact)),
+            Route("/api/image/{card_id}/{name}", _r(routes_card.api_image)),
             Route("/api/session", _r(routes_card.api_session)),
             Route("/api/command", _r(routes_card.api_command), methods=["POST"]),
             Route("/api/shutdown", _r(routes_card.api_shutdown), methods=["POST"]),

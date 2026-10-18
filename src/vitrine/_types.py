@@ -110,6 +110,25 @@ class Form:
 
 
 @dataclass
+class Picture:
+    """One image for ``show()``, with what the researcher should see beside it.
+
+    ``show(Picture(...))`` makes an image card and ``show([Picture(...), ...])``
+    a gallery. ``image`` takes a PIL image, a NumPy array, or the path of a
+    PNG, JPEG, WebP, or GIF file. ``overlay`` is drawn over the image and can
+    be switched off in the viewer: an RGBA image, a mask (a bool or 0/1 array),
+    a heatmap (a float array, scaled to 0-1), or a dict of named masks, each
+    drawn in its own colour with a legend.
+    """
+
+    image: Any
+    caption: str | None = None
+    labels: dict[str, Any] | None = None
+    """Findings, scores, or ground truth shown with the image, in order."""
+    overlay: Any = None
+
+
+@dataclass
 class CardProvenance:
     """Provenance metadata for a display card.
 

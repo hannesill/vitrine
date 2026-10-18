@@ -1,0 +1,333 @@
+/* ================================================================
+   PICTURES — image cards from show(image) / show([images]), and the
+   viewer they open in. Radiographs read best on black, so frames and
+   the viewer stage are black in both themes.
+   ================================================================ */
+
+.pictures-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+
+.pictures-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.picture-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.picture-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.picture-legend-swatch {
+  width: 10px;
+  height: 10px;
+  border: 1px solid var(--border);
+}
+
+.pictures-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.pictures-single .pictures-grid {
+  display: block;
+}
+
+.picture-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.picture-main {
+  display: block;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: zoom-in;
+}
+
+.pictures-picking .picture-main {
+  cursor: pointer;
+}
+
+.picture-main:focus-visible,
+.picture-zoom:focus-visible {
+  outline: var(--border-width) solid var(--image-color);
+  outline-offset: 2px;
+}
+
+/* While a question is answered on the pictures, a tile picks and this opens the viewer. */
+.picture-zoom {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid #555;
+  background: rgba(0, 0, 0, 0.7);
+  color: #f5f5f5;
+  font-size: 14px;
+  cursor: zoom-in;
+}
+
+.pictures-picking .picture-zoom {
+  display: block;
+}
+
+.picture-tile.picked .picture-frame {
+  outline: 4px solid var(--decision-color, var(--accent));
+  outline-offset: -4px;
+}
+
+.picture-tile.picked .picture-frame::after {
+  content: '\2713';
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 22px;
+  height: 22px;
+  line-height: 22px;
+  text-align: center;
+  font-weight: 700;
+  color: #fff;
+  background: var(--decision-color, var(--accent));
+}
+
+.question-on-pictures .question-option:not(.question-option-other) {
+  display: none;
+}
+
+.picture-question-summary {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 4px 0 6px;
+}
+
+.picture-frame {
+  position: relative;
+  display: block;
+  background: #000;
+  border: var(--border-width) solid var(--border);
+  box-shadow: var(--shadow-sm);
+}
+
+.pictures-gallery .picture-frame {
+  aspect-ratio: 1;
+}
+
+.pictures-gallery .picture-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.pictures-single .picture-frame {
+  display: inline-block;
+  max-width: 100%;
+}
+
+.pictures-single .picture-frame img {
+  display: block;
+  max-width: 100%;
+  max-height: 70vh;
+  width: auto;
+  height: auto;
+}
+
+.picture-frame .picture-overlay {
+  position: absolute;
+  inset: 0;
+  display: none;
+  pointer-events: none;
+}
+
+.pictures-single .picture-frame .picture-overlay {
+  width: 100%;
+  height: 100%;
+}
+
+.show-overlays .picture-frame .picture-overlay {
+  display: block;
+}
+
+.picture-caption {
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picture-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.picture-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  background: var(--card-bg, var(--bg-card));
+}
+
+/* Viewer */
+
+.picture-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  background: rgba(0, 0, 0, 0.92);
+  color: #f5f5f5;
+}
+
+.picture-viewer-header,
+.picture-viewer-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  font-size: 13px;
+}
+
+.picture-viewer-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picture-viewer-counter {
+  color: #aaa;
+  font-family: var(--font-mono);
+}
+
+.picture-viewer-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.picture-viewer-btn {
+  min-width: 32px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid #555;
+  background: #111;
+  color: #f5f5f5;
+  font: inherit;
+  cursor: pointer;
+}
+
+.picture-viewer-btn:hover {
+  background: #222;
+}
+
+.picture-viewer-btn:focus-visible {
+  outline: 2px solid var(--image-color);
+  outline-offset: 1px;
+}
+
+.picture-viewer-opacity {
+  width: 110px;
+}
+
+.picture-viewer-stage {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+  background: #000;
+}
+
+.picture-viewer-stage.dragging {
+  cursor: grabbing;
+}
+
+.picture-viewer-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+}
+
+.picture-viewer-image,
+.picture-viewer-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  user-select: none;
+}
+
+.picture-viewer-overlay {
+  pointer-events: none;
+}
+
+.picture-viewer-prev,
+.picture-viewer-next {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 22px;
+  height: 48px;
+}
+
+.picture-viewer-prev {
+  left: 12px;
+}
+
+.picture-viewer-next {
+  right: 12px;
+}
+
+.picture-viewer-footer .picture-label {
+  background: #111;
+  border-color: #555;
+  color: #f5f5f5;
+}
+
+.picture-viewer-footer .picture-legend-swatch {
+  border-color: #555;
+}
+
+@media print {
+  .picture-viewer {
+    display: none;
+  }
+}
+
+/* Images in markdown cards: never wider than the card. */
+.markdown-body img {
+  max-width: 100%;
+  height: auto;
+}

@@ -266,6 +266,7 @@ function addCard(cardData) {
     controlsBar.className = 'card-controls-bar';
     renderFormFields(controlsBar, cardData.preview.controls);
     el.appendChild(controlsBar);
+    if (cardData.card_type === 'image') linkPictureQuestion(el, cardData);
   }
 
   // Waiting card: response UI
@@ -1134,10 +1135,24 @@ function _buildCardBody(card) {
   if (card.card_type === 'agent' && card.preview) {
     return _buildAgentPrompt(card.preview);
   }
+  if (card.card_type === 'image' && card.preview && card.preview.images) {
+    return _buildPicturesPrompt(card.preview.images);
+  }
   if (card.card_type === 'image') {
     return '*(image — not copyable as text)*\n';
   }
   return '';
+}
+
+// What an agent can read of an image card: captions and labels, not pixels.
+function _buildPicturesPrompt(images) {
+  var lines = [images.length + (images.length === 1 ? ' image' : ' images') + ':'];
+  images.forEach(function(entry, i) {
+    var labels = entry.labels || {};
+    var parts = Object.keys(labels).map(function(k) { return k + ': ' + labels[k]; });
+    lines.push('- ' + (entry.caption || 'image ' + (i + 1)) + (parts.length ? ' (' + parts.join(', ') + ')' : ''));
+  });
+  return lines.join('\n') + '\n';
 }
 
 function _buildTablePrompt(preview) {

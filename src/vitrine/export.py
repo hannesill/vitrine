@@ -15,6 +15,7 @@ import base64
 import io
 import json
 import logging
+import re
 import zipfile
 from datetime import datetime, timezone
 from html import escape
@@ -25,6 +26,7 @@ import duckdb
 
 from vitrine._types import CardDescriptor, CardType
 from vitrine.artifacts import _serialize_card
+from vitrine.images import MARKDOWN_IMAGE_SCHEME, MEDIA_TYPES
 from vitrine.study_manager import StudyManager
 
 logger = logging.getLogger(__name__)
@@ -115,11 +117,10 @@ def _build_json_zip(
         if not store:
             continue
 
-        for ext in ("parquet", "json", "svg", "png"):
-            artifact_path = store._artifacts_dir / f"{card.artifact_id}.{ext}"
-            if artifact_path.exists():
-                arcname = f"artifacts/{card.artifact_id}.{ext}"
-                zf.write(artifact_path, arcname)
+        # Every file the card owns: one for a table or chart, several for an
+        # image card (each picture, thumbnail, and overlay).
+        for artifact_path in sorted(store._artifacts_dir.glob(f"{card.artifact_id}.*")):
+            zf.write(artifact_path, f"artifacts/{artifact_path.name}")
 
     _add_output_files_to_zip(zf, study_manager, study, studies)
 
@@ -440,11 +441,11 @@ def _render_card_body(card: CardDescriptor, study_manager: StudyManager) -> str:
     elif card.card_type == CardType.PLOTLY:
         return _render_plotly_html(card)
     elif card.card_type == CardType.IMAGE:
-        return _render_image_html(card)
+        return _render_image_html(card, study_manager)
     elif card.card_type == CardType.DECISION:
         return _render_form_html(card)
     elif card.card_type == CardType.MARKDOWN:
-        return _render_markdown_html(card)
+        return _render_markdown_html(card, study_manager)
     elif card.card_type == CardType.KEYVALUE:
         return _render_keyvalue_html(card)
     elif card.card_type == CardType.AGENT:
@@ -551,8 +552,10 @@ def _render_plotly_html(card: CardDescriptor) -> str:
 </script>"""
 
 
-def _render_image_html(card: CardDescriptor) -> str:
+def _render_image_html(card: CardDescriptor, study_manager: StudyManager) -> str:
     """Render an image card as inline base64."""
+    if "images" in card.preview:
+        return _render_pictures_html(card, study_manager)
     preview = card.preview
     data = preview.get("data", "")
     fmt = preview.get("format", "svg")
@@ -570,9 +573,78 @@ def _render_image_html(card: CardDescriptor) -> str:
     )
 
 
-def _render_markdown_html(card: CardDescriptor) -> str:
+def _inline_markdown_images(
+    card: CardDescriptor, text: str, study_manager: StudyManager
+) -> str:
+    """Replace a markdown card's vitrine-image: references with the images' data."""
+    if MARKDOWN_IMAGE_SCHEME not in text:
+        return text
+    store = study_manager.get_store_for_card(card.card_id)
+
+    def data_uri(match: re.Match[str]) -> str:
+        name = match.group(1)
+        path = store.card_file_path(card.card_id, name) if store else None
+        if path is None or not path.is_file():
+            return match.group(0)
+        mime = MEDIA_TYPES[path.suffix.lstrip(".")]
+        return (
+            f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+        )
+
+    return re.sub(re.escape(MARKDOWN_IMAGE_SCHEME) + r"([\w.-]+)", data_uri, text)
+
+
+def _render_pictures_html(card: CardDescriptor, study_manager: StudyManager) -> str:
+    """Render an image card's pictures from their thumbnails, inlined.
+
+    Thumbnails keep a report of a large gallery small; the JSON export carries
+    the full-resolution files.
+    """
+    store = study_manager.get_store_for_card(card.card_id)
+
+    def inline(name: str | None) -> str | None:
+        path = store.card_file_path(card.card_id, name) if store and name else None
+        if path is None or not path.is_file():
+            return None
+        mime = MEDIA_TYPES[path.suffix.lstrip(".")]
+        return (
+            f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+        )
+
+    layout = card.preview.get("layout", "gallery")
+    figures = []
+    for entry in card.preview.get("images", []):
+        thumb = inline(entry.get("thumb"))
+        if thumb is None:
+            continue
+        overlay = inline(entry.get("overlay_thumb"))
+        caption = entry.get("caption") or ""
+        labels = entry.get("labels") or {}
+        overlay_html = (
+            f'<img class="picture-overlay" src="{overlay}" alt="" />' if overlay else ""
+        )
+        labels_html = "".join(
+            f'<span class="picture-label">{escape(k)}: {escape(v)}</span>'
+            for k, v in labels.items()
+        )
+        figures.append(
+            f'<figure class="picture">'
+            f'<div class="picture-frame"><img src="{thumb}" alt="{escape(caption or card.title or "Image")}" />'
+            f"{overlay_html}</div>"
+            + (f"<figcaption>{escape(caption)}</figcaption>" if caption else "")
+            + (
+                f'<div class="picture-labels">{labels_html}</div>'
+                if labels_html
+                else ""
+            )
+            + "</figure>"
+        )
+    return f'<div class="pictures pictures-{escape(layout)}">{"".join(figures)}</div>'
+
+
+def _render_markdown_html(card: CardDescriptor, study_manager: StudyManager) -> str:
     """Render markdown as HTML (uses marked.js in the export, fallback to escaped text)."""
-    text = card.preview.get("text", "")
+    text = _inline_markdown_images(card, card.preview.get("text", ""), study_manager)
     div_id = f"md-{card.card_id}"
     return f"""<div id="{div_id}" class="markdown-export">{escape(text)}</div>
 <script class="md-init">
