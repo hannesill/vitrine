@@ -151,12 +151,12 @@ function renderCardPage(pageEl, data) {
   pageEl.appendChild(buildCardPageBar(card));
   pageEl.appendChild(buildCardPageHead(card, versions));
 
-  // Why. A replace without a new reason keeps the old one, so say which
-  // version the reason was written for when the card has changed since.
+  // Why. A replace without a new reason keeps the old one, so say since
+  // which version the reason has stood when the card has changed since.
   var whyFrom = versions.length;
   while (whyFrom > 1 && card.why && versions[whyFrom - 2].card.why === card.why) whyFrom--;
   var why = cpSection('Why', card.why && whyFrom < versions.length
-    ? 'Written for version ' + whyFrom + '; the card has changed since' : null);
+    ? 'Unchanged since version ' + whyFrom : null);
   if (card.why) {
     why.appendChild(cpEl('p', 'card-page-why', card.why));
   } else {
