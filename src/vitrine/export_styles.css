@@ -306,6 +306,37 @@
     margin-top: 4px;
   }
 
+  .picture.picked .picture-frame {
+    outline: 3px solid #ef4444;
+    outline-offset: -3px;
+  }
+
+  .picture.picked figcaption::before {
+    content: "\2713  ";
+    color: #ef4444;
+    font-weight: 700;
+  }
+
+  .picture-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 8px;
+    font-size: 12px;
+  }
+
+  .picture-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .picture-legend-swatch {
+    width: 10px;
+    height: 10px;
+    border: 1px solid #ccc;
+  }
+
   .picture-label {
     font-family: var(--font-mono, monospace);
     font-size: 11px;

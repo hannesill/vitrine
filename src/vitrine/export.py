@@ -12,6 +12,7 @@ Export formats:
 from __future__ import annotations
 
 import base64
+import dataclasses
 import io
 import json
 import logging
@@ -612,8 +613,41 @@ def _render_pictures_html(card: CardDescriptor, study_manager: StudyManager) -> 
         )
 
     layout = card.preview.get("layout", "gallery")
+    images = card.preview.get("images", [])
+    controls = card.preview.get("controls") or []
+    answers = card.response_values or {}
+
+    # Pictures picked as the answer to a question whose options are the
+    # captions, as the board marks them.
+    captions = sorted(e["caption"] for e in images if e.get("caption"))
+    picked: set[str] = set()
+    for field in controls:
+        labels = sorted(
+            (o.get("label") if isinstance(o, dict) else str(o))
+            for o in field.get("options", [])
+        )
+        if labels == captions and len(set(captions)) == len(captions):
+            value = answers.get(field.get("name", ""))
+            picked |= set(value) if isinstance(value, list) else {value} - {None}
+
+    legend: dict[str, str] = {}
+    for entry in images:
+        for name, color in entry.get("legend") or []:
+            legend.setdefault(name, color)
+    legend_html = (
+        '<div class="picture-legend">'
+        + "".join(
+            f'<span class="picture-legend-item"><span class="picture-legend-swatch" '
+            f'style="background:{escape(color)}"></span>{escape(name)}</span>'
+            for name, color in legend.items()
+        )
+        + "</div>"
+        if legend
+        else ""
+    )
+
     figures = []
-    for entry in card.preview.get("images", []):
+    for entry in images:
         thumb = inline(entry.get("thumb"))
         if thumb is None:
             continue
@@ -628,7 +662,7 @@ def _render_pictures_html(card: CardDescriptor, study_manager: StudyManager) -> 
             for k, v in labels.items()
         )
         figures.append(
-            f'<figure class="picture">'
+            f'<figure class="picture{" picked" if caption in picked else ""}">'
             f'<div class="picture-frame"><img src="{thumb}" alt="{escape(caption or card.title or "Image")}" />'
             f"{overlay_html}</div>"
             + (f"<figcaption>{escape(caption)}</figcaption>" if caption else "")
@@ -639,7 +673,17 @@ def _render_pictures_html(card: CardDescriptor, study_manager: StudyManager) -> 
             )
             + "</figure>"
         )
-    return f'<div class="pictures pictures-{escape(layout)}">{"".join(figures)}</div>'
+    # The researcher's answers to the card's questions, as for a form.
+    answers_html = (
+        _render_form_html(dataclasses.replace(card, preview={"fields": controls}))
+        if controls and answers
+        else ""
+    )
+    return (
+        legend_html
+        + f'<div class="pictures pictures-{escape(layout)}">{"".join(figures)}</div>'
+        + answers_html
+    )
 
 
 def _render_markdown_html(card: CardDescriptor, study_manager: StudyManager) -> str:

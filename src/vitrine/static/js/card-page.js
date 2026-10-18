@@ -569,12 +569,28 @@ function describeChange(a, b, sessions) {
 // ----------------------------------------------------------------
 // Content of a version, from what its index entry keeps inline
 // ----------------------------------------------------------------
+// A markdown card's earlier version with its own images (`vitrine-image:`,
+// served only while they are the card's) named instead of shown.
+function withoutOwnImages(card) {
+  var text = (card.preview && card.preview.text) || '';
+  if (text.indexOf('vitrine-image:') === -1) return card;
+  text = text
+    .replace(/!\[([^\]]*)\]\(\s*<?vitrine-image:[^)\s>]+>?(?:\s+"[^"]*")?\s*\)/g, function(_, alt) {
+      return '*(' + (alt || 'Image') + ': not kept for this version)*';
+    })
+    .replace(/<img\b[^>]*vitrine-image:[^>]*>/gi, '*(Image not kept for this version)*');
+  var copy = Object.assign({}, card);
+  copy.preview = Object.assign({}, card.preview, { text: text });
+  return copy;
+}
+
 // `live` is the card as it is now, whose files the server still serves.
 function renderVersionContent(container, card, live) {
   var preview = card.preview || {};
   switch (card.card_type) {
     case 'markdown':
-      renderMarkdown(container, card);
+      // An earlier version's own images went with it when the card was replaced.
+      renderMarkdown(container, live ? card : withoutOwnImages(card));
       break;
     case 'keyvalue':
       renderKeyValue(container, card);
