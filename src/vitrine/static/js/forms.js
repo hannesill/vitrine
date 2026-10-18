@@ -33,6 +33,9 @@ function renderFormFields(container, fields) {
   container.appendChild(wrapper);
 }
 
+// A single choice among this many options or more reads better as a dropdown.
+var DROPDOWN_MIN_OPTIONS = 7;
+
 function renderQuestionField(container, field) {
   // Optional header chip
   if (field.header) {
@@ -47,6 +50,11 @@ function renderQuestionField(container, field) {
   questionText.className = 'question-text';
   questionText.textContent = field.question || '';
   container.appendChild(questionText);
+
+  if (!field.multiple && (field.options || []).length >= DROPDOWN_MIN_OPTIONS) {
+    renderQuestionDropdown(container, field);
+    return;
+  }
 
   var optionsDiv = document.createElement('div');
   optionsDiv.className = 'question-options';
@@ -157,6 +165,62 @@ function renderQuestionField(container, field) {
   container.appendChild(optionsDiv);
 }
 
+function renderQuestionDropdown(container, field) {
+  var row = document.createElement('div');
+  row.className = 'question-dropdown';
+
+  var select = document.createElement('select');
+  select.className = 'question-select';
+  select.dataset.fieldInput = field.name;
+  select.setAttribute('aria-label', field.question || field.name);
+
+  var placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = 'Choose\u2026';
+  select.appendChild(placeholder);
+
+  var descriptions = {};
+  (field.options || []).forEach(function(opt) {
+    var option = document.createElement('option');
+    option.value = opt.label || '';
+    option.textContent = opt.label || '';
+    if (opt.description) descriptions[option.value] = opt.description;
+    select.appendChild(option);
+  });
+
+  var otherText = null;
+  if (field.allow_other !== false) {
+    var otherOption = document.createElement('option');
+    otherOption.value = '__other__';
+    otherOption.textContent = 'Other\u2026';
+    select.appendChild(otherOption);
+    otherText = document.createElement('input');
+    otherText.type = 'text';
+    otherText.className = 'question-other-input';
+    otherText.dataset.otherInput = field.name;
+    otherText.placeholder = 'Type your answer...';
+    otherText.hidden = true;
+  }
+
+  var desc = document.createElement('div');
+  desc.className = 'question-option-desc';
+
+  function update() {
+    desc.textContent = descriptions[select.value] || '';
+    if (otherText) otherText.hidden = select.value !== '__other__';
+  }
+  select.addEventListener('change', update);
+
+  var defaultValue = Array.isArray(field.default) ? field.default[0] : field.default;
+  if (defaultValue != null) select.value = defaultValue;
+  update();
+
+  row.appendChild(select);
+  if (otherText) row.appendChild(otherText);
+  container.appendChild(row);
+  container.appendChild(desc);
+}
+
 function collectFormValues(cardEl) {
   var values = {};
   var fields = cardEl.querySelectorAll('.form-field');
@@ -166,8 +230,16 @@ function collectFormValues(cardEl) {
 
     switch (type) {
       case 'question': {
+        var select = fieldEl.querySelector('select[data-field-input]');
         var hasCheckbox = fieldEl.querySelector('input[type="checkbox"]');
-        if (hasCheckbox) {
+        if (select) {
+          if (select.value === '__other__') {
+            var otherValue = fieldEl.querySelector('[data-other-input]');
+            values[name] = (otherValue && otherValue.value.trim()) ? otherValue.value.trim() : null;
+          } else {
+            values[name] = select.value || null;
+          }
+        } else if (hasCheckbox) {
           // Multi-select mode
           var selected = [];
           var checked = fieldEl.querySelectorAll('input[type="checkbox"]:checked');

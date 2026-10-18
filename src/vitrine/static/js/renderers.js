@@ -5,6 +5,8 @@
 // ================================================================
 function renderMarkdown(container, cardData) {
   var text = (cardData.preview && cardData.preview.text) || '';
+  // Local images were copied beside the card; show() wrote vitrine-image:<file>.
+  text = text.split('vitrine-image:').join('/api/image/' + encodeURIComponent(cardData.card_id) + '/');
   container.className += ' markdown-body';
 
   if (window.marked) {
@@ -43,6 +45,10 @@ function renderKeyValue(container, cardData) {
 
 function renderImage(container, cardData) {
   var preview = cardData.preview || {};
+  if (preview.images) {
+    renderPictures(container, cardData);
+    return;
+  }
   var imgContainer = document.createElement('div');
   imgContainer.className = 'image-container';
 

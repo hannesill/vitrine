@@ -1251,17 +1251,6 @@ class TestFormAutoWait:
         assert isinstance(result, DisplayResponse)
         assert result.action == "confirm"
 
-    def test_form_explicit_wait_false_still_blocks(self, store, mock_server):
-        """show(Form(...), wait=False) still blocks because forms force wait=True."""
-        from vitrine._types import Form, Question
-
-        mock_server._mock_response = {"action": "skip", "card_id": "test"}
-        result = display.show(
-            Form([Question("method", "Which method?", ["logistic", "cox"])]), wait=False
-        )
-        assert isinstance(result, DisplayResponse)
-        assert result.action == "skip"
-
     def test_form_renders_as_form_card(self, store, mock_server):
         """Form cards are stored as FORM with preview.fields."""
         from vitrine._types import Form, Question
@@ -1293,6 +1282,37 @@ class TestFormAutoWait:
         result = display.show(df, controls=[Question("method", "Which?", ["a", "b"])])
         assert isinstance(result, DisplayResponse)
         assert result.action == "confirm"
+
+    def test_controls_with_wait_false_ask_without_blocking(
+        self, store, mock_server, monkeypatch
+    ):
+        """wait=False posts the question and returns; the answer comes later."""
+        from vitrine._types import Question
+
+        def no_waiting(*_args, **_kwargs):
+            raise AssertionError("show() waited")
+
+        monkeypatch.setattr(_client_mod, "_wait_for_card_response", no_waiting)
+        df = pd.DataFrame({"x": [1, 2]})
+        handle = display.show(
+            df, controls=[Question("ok", "Good?", ["Yes", "No"])], wait=False
+        )
+        assert not isinstance(handle, DisplayResponse)
+        [card] = store.list_cards()
+        assert card.response_requested is True
+        assert card.timeout is None
+
+    def test_form_with_wait_false_asks_without_blocking(
+        self, store, mock_server, monkeypatch
+    ):
+        from vitrine._types import Form, Question
+
+        def no_waiting(*_args, **_kwargs):
+            raise AssertionError("show() waited")
+
+        monkeypatch.setattr(_client_mod, "_wait_for_card_response", no_waiting)
+        display.show(Form([Question("ok", "Good?", ["Yes", "No"])]), wait=False)
+        assert store.list_cards()[0].response_requested is True
 
 
 class TestActions:

@@ -31,6 +31,7 @@ from vitrine._types import (
     DisplayHandle,
     DisplayResponse,
     Form,
+    Picture,
     Question,
 )
 from vitrine.code_origin import CallingCode, calling_code
@@ -41,6 +42,7 @@ __all__ = [
     "DisplayHandle",
     "DisplayResponse",
     "Form",
+    "Picture",
     "Question",
     "ask",
     "clean_studies",
@@ -174,7 +176,7 @@ def show(
     why: str | None = None,
     replace: str | None = None,
     position: str | None = None,
-    wait: bool = False,
+    wait: bool | None = None,
     prompt: str | None = None,
     timeout: float = 600,
     actions: list[str] | None = None,
@@ -190,6 +192,8 @@ def show(
     - pd.DataFrame -> interactive table (artifact-backed, paged)
     - plotly Figure -> interactive chart
     - matplotlib Figure -> static chart (SVG)
+    - PIL image, NumPy image array, image file Path, or Picture -> image
+      card; a list of them -> gallery (zoom, overlays, labels in the viewer)
     - str -> markdown card
     - dict -> formatted key-value card
     - Form -> structured input card (freezes on confirm)
@@ -208,7 +212,10 @@ def show(
         replace: Card ID to update instead of appending. The card's
             previous version is kept as a revision, unless nothing changed.
         position: "top" to prepend instead of append.
-        wait: If True, block until user responds in the browser.
+        wait: If True, block until the user responds in the browser. A Form
+            or controls ask the user and block by default; wait=False asks
+            without blocking, and the answer is read later with get_card()
+            or study_context().
         prompt: Question shown to the user (requires wait=True).
         timeout: Seconds to wait for response (default 600).
         actions: Named action buttons for decision cards. When provided,
@@ -224,13 +231,12 @@ def show(
     if isinstance(obj, Question):
         obj = Form([obj])
 
-    # Forms are always decision cards — force wait=True
-    if isinstance(obj, Form):
-        wait = True
-        if prompt is None:
-            prompt = title
-    if controls:
-        wait = True
+    # A Form or controls ask the user; they block unless wait=False says not to.
+    asks = isinstance(obj, Form) or bool(controls) or bool(wait)
+    if isinstance(obj, Form) and prompt is None:
+        prompt = title
+    if wait is None:
+        wait = asks
 
     _client._ensure_started()
 
@@ -356,9 +362,10 @@ def show(
 
     # Set interaction fields and update the stored card
     interaction_updates = {}
-    if wait:
+    if asks:
         card.response_requested = True
         interaction_updates["response_requested"] = True
+    if wait:
         card.timeout = timeout
         interaction_updates["timeout"] = timeout
     if prompt is not None:

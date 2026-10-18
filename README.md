@@ -64,7 +64,41 @@ The server auto-starts on first `show()` and opens a browser tab. No setup, no c
 
 ### One Function, Many Types
 
-DataFrames become paginated tables with server-side sort and search via DuckDB. Plotly figures render interactively. Matplotlib figures convert to SVG. Strings render as markdown. Dicts become key-value cards. Images display natively.
+DataFrames become paginated tables with server-side sort and search via DuckDB. Plotly figures render interactively. Matplotlib figures convert to SVG. Strings render as markdown. Dicts become key-value cards.
+
+### Images
+
+A PIL image, a NumPy image array, or the `Path` of a PNG, JPEG, WebP, GIF, or SVG file becomes an image card; a list of them becomes a gallery. (A plain string is markdown, so pass a `Path`.) Wrap one in `Picture` to give it a caption, labels, or an overlay:
+
+```python
+from pathlib import Path
+from vitrine import Picture, show
+
+show(Path("film.jpg"), title="Admission film")
+show(
+    [
+        Picture(path, caption=f"study {sid}", labels={"Effusion": p, "Radiologist": truth},
+                overlay={"Left lung": left, "Right lung": right, "Heart": heart})
+        for path, sid, p, truth, left, right, heart in rows
+    ],
+    title="Effusion: model vs radiologist",
+)
+```
+
+Clicking a picture opens a viewer that zooms and pans, steps through the gallery with the arrow keys, and shows or hides overlays. An overlay is a mask, a 0-1 heatmap, an RGBA image, or a dict of named masks, each drawn in its own colour with a legend. Non-8-bit arrays (16-bit radiographs, floats) are scaled between their 0.5th and 99.5th percentiles. DICOM is not read: convert it to an array first.
+
+Pictures are stored as files beside the card (the original, a thumbnail, and any overlay), so a large gallery does not grow the card index, and the board loads thumbnails until one is opened. The HTML export embeds the thumbnails; the JSON export carries every file.
+
+A question whose options are the gallery's captions is answered on the pictures: clicking a tile picks it (the viewer has a Select button too), and the option list folds into a line naming the picks. Pass `wait=False` to ask without waiting; read the answer later with `get_card()` or `study_context()`:
+
+```python
+captions = [p.caption for p in pictures]
+show(pictures, controls=[Question("wrong", "Which segmentations are wrong?", captions, multiple=True)], wait=False)
+```
+
+A single-choice question with seven or more options, on any card, shows as a dropdown.
+
+Markdown cards can embed local images: `show("## Result\n\n![ROC curve](figures/roc.png)")` copies `figures/roc.png` into the card (paths are read from the working directory), so the study keeps it after the file moves, and both exports carry it. `<img src="figures/roc.png" width="300">` works too, for a smaller image. Web addresses and data URIs are left as they are.
 
 ### Studies, Not Sessions
 

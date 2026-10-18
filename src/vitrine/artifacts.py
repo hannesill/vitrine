@@ -283,7 +283,9 @@ class ArtifactStore:
         for path in self._artifacts_dir.glob(f"{to_id}.*"):
             path.unlink()
         for path in self._artifacts_dir.glob(f"{from_id}.*"):
-            path.rename(self._artifacts_dir / f"{to_id}{path.suffix}")
+            # Keep everything after the id: an image card's files are
+            # "<id>.image-0-<hash>.png", not just "<id>.png".
+            path.rename(self._artifacts_dir / f"{to_id}{path.name[len(from_id) :]}")
 
     def remove_from_index(self, card_id: str) -> None:
         """Drop a card's entry from the index, keeping its artifacts."""
@@ -328,7 +330,11 @@ class ArtifactStore:
             number = len(revisions) + 1
             kept: list[str] = []
             for source in sorted(self._artifacts_dir.glob(f"{card_id}.*")):
-                target = path.parent / card_id / f"{number}{source.suffix}"
+                # Everything after the id: an image card keeps several files
+                # of one kind ("<id>.image-0-<hash>.png", "<id>.thumb-0-...").
+                target = (
+                    path.parent / card_id / f"{number}{source.name[len(card_id) :]}"
+                )
                 target.parent.mkdir(exist_ok=True)
                 shutil.copy2(source, target)
                 kept.append(target.name)
@@ -362,7 +368,9 @@ class ArtifactStore:
 
         ours = sorted(self._artifacts_dir.glob(f"{card_id}.*"))
         theirs = sorted(self._artifacts_dir.glob(f"{other_id}.*"))
-        if [p.suffix for p in ours] != [p.suffix for p in theirs]:
+        if [p.name[len(card_id) :] for p in ours] != [
+            p.name[len(other_id) :] for p in theirs
+        ]:
             return False
         # filecmp compares sizes first, then reads both files in small chunks.
         return all(filecmp.cmp(a, b, shallow=False) for a, b in zip(ours, theirs))
@@ -486,6 +494,22 @@ class ArtifactStore:
         path.write_bytes(data)
         logger.debug(f"Stored image artifact: {path} ({len(data)} bytes)")
         return path
+
+    def store_card_file(self, card_id: str, name: str, data: bytes) -> Path:
+        """Store one of an image card's files as ``<card_id>.<name>``."""
+        path = self.card_file_path(card_id, name)
+        if path is None:
+            raise ValueError(f"Not a card file name: {name!r}")
+        path.write_bytes(data)
+        return path
+
+    def card_file_path(self, card_id: str, name: str) -> Path | None:
+        """Where an image card keeps the file ``name``, or None for a name it never writes."""
+        from vitrine.images import CARD_FILE_RE
+
+        if not CARD_FILE_RE.match(name) or "/" in card_id or "\\" in card_id:
+            return None
+        return self._artifacts_dir / f"{card_id}.{name}"
 
     @staticmethod
     def _sanitize_search(search: str) -> str | None:

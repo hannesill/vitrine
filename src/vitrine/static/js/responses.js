@@ -57,14 +57,15 @@ function buildResponseUI(cardData, cardEl) {
   };
   actionsRow.appendChild(skipBtn);
 
-  // Timeout countdown
+  container.appendChild(actionsRow);
+
+  // A countdown only while an agent waits (show(wait=True)). A question asked
+  // with wait=False has no timeout and can be answered at any time.
+  if (!(cardData.timeout && cardData.timeout > 0)) return container;
   var timeoutEl = document.createElement('span');
   timeoutEl.className = 'response-timeout';
   actionsRow.appendChild(timeoutEl);
-  container.appendChild(actionsRow);
-
-  // Start countdown (use backend-configured timeout, default 5 min)
-  var remaining = (cardData.timeout && cardData.timeout > 0) ? Math.floor(cardData.timeout) : 300;
+  var remaining = Math.floor(cardData.timeout);
   function updateCountdown() {
     var mins = Math.floor(remaining / 60);
     var secs = remaining % 60;

@@ -28,6 +28,12 @@ from vitrine._types import (
     Form,
 )
 from vitrine.artifacts import ArtifactStore
+from vitrine.images import (
+    is_gallery,
+    is_image,
+    store_markdown_images,
+    store_pictures,
+)
 from vitrine.redaction import Redactor
 
 logger = logging.getLogger(__name__)
@@ -176,9 +182,17 @@ def _render_markdown(
     source: str | None,
     study: str | None,
     store: ArtifactStore,
+    embed_images: bool = True,
 ) -> CardDescriptor:
-    """Render a string as a markdown card (inlined, no artifact)."""
+    """Render a string as a markdown card.
+
+    The text is inlined. Local images it embeds are copied beside the card
+    (vitrine.images.store_markdown_images), which then owns them as files.
+    """
     card_id = _make_card_id()
+    files: list[str] = []
+    if embed_images:
+        text, files = store_markdown_images(text, card_id, store.store_card_file)
     card = CardDescriptor(
         card_id=card_id,
         card_type=CardType.MARKDOWN,
@@ -186,6 +200,8 @@ def _render_markdown(
         description=description,
         timestamp=_make_timestamp(),
         study=study,
+        artifact_id=card_id if files else None,
+        artifact_type="files" if files else None,
         preview={"text": text},
         provenance=_build_provenance(source),
     )
@@ -353,6 +369,37 @@ def _render_matplotlib(
     return card
 
 
+def _render_pictures(
+    items: list[Any],
+    gallery: bool,
+    title: str | None,
+    description: str | None,
+    source: str | None,
+    study: str | None,
+    store: ArtifactStore,
+) -> CardDescriptor:
+    """Render one image, or a gallery of them, as an image card.
+
+    The pictures are files beside the card (see vitrine.images); the preview
+    names them and carries each one's size, caption, labels, and legend.
+    """
+    card_id = _make_card_id()
+    images = store_pictures(items, card_id, store.store_card_file)
+    card = CardDescriptor(
+        card_id=card_id,
+        card_type=CardType.IMAGE,
+        title=title or (f"{len(images)} images" if gallery else "Image"),
+        description=description,
+        timestamp=_make_timestamp(),
+        study=study,
+        artifact_id=card_id,
+        artifact_type="images",
+        preview={"layout": "gallery" if gallery else "single", "images": images},
+        provenance=_build_provenance(source),
+    )
+    return card
+
+
 def _render_decision(
     form: Form,
     title: str | None,
@@ -399,7 +446,9 @@ def _render_repr(
             type(obj).__name__,
         )
     text = f"```\n{obj!r}\n```"
-    return _render_markdown(text, title, description, source, study, store)
+    return _render_markdown(
+        text, title, description, source, study, store, embed_images=False
+    )
 
 
 def render(
@@ -420,6 +469,8 @@ def render(
     - pd.DataFrame -> table card with Parquet artifact
     - plotly Figure -> interactive chart with JSON artifact
     - matplotlib Figure -> SVG image card
+    - PIL image, NumPy image array, image file Path, or Picture -> image card
+    - list of those -> gallery image card
     - str -> inline markdown card
     - dict -> inline key-value card
     - Other -> repr() fallback as markdown code block
@@ -458,6 +509,12 @@ def render(
         card = _render_plotly(obj, title, description, source, study, store)
     elif _is_matplotlib_figure(obj):
         card = _render_matplotlib(obj, title, description, source, study, store)
+    elif is_image(obj):
+        card = _render_pictures([obj], False, title, description, source, study, store)
+    elif is_gallery(obj):
+        card = _render_pictures(
+            list(obj), True, title, description, source, study, store
+        )
     elif isinstance(obj, str):
         card = _render_markdown(obj, title, description, source, study, store)
     elif isinstance(obj, dict):
