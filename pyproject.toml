@@ -4,7 +4,7 @@ build-backend = "pdm.backend"
 
 [project]
 name = "vitrine"
-version = "0.1.4"
+version = "0.1.5"
 description = "Research journal and live display for AI agents"
 requires-python = ">=3.10"
 license = "MIT"
