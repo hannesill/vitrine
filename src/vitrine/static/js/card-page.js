@@ -120,6 +120,8 @@ function loadCardPage(cardId, quiet) {
     })
     .then(function(data) {
       if (!state.cardPage || state.cardPage.request !== token) return;
+      // A link may name the card by a prefix; live updates carry the full ID.
+      state.cardPage.cardId = data.card.card_id;
       renderCardPage(pageEl, data);
     })
     .catch(function(err) {

@@ -78,6 +78,25 @@ class TestRecordAgentSession:
         )
         assert record["title"] == "Kept"
 
+    def test_a_turn_recorded_again_keeps_fields_left_out(self, tmp_path):
+        record_agent_session(
+            tmp_path,
+            {
+                "host": "lincei",
+                "session_id": "s",
+                "turns": [_turn("t1", "2026-10-18T10:00:00Z")],
+            },
+        )
+        record = record_agent_session(
+            tmp_path,
+            {
+                "host": "lincei",
+                "session_id": "s",
+                "turns": [{"turn_id": "t1", "started_at": "2026-10-18T10:00:00Z"}],
+            },
+        )
+        assert record["turns"][0]["model"] == "claude-opus-5-5"
+
     def test_unknown_fields_are_ignored(self, tmp_path):
         record = record_agent_session(
             tmp_path, {"host": "lincei", "session_id": "thr_1", "colour": "blue"}

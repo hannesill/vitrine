@@ -122,15 +122,29 @@ def _find_card(
 async def api_card_history(server: DisplayServer, request: Request) -> JSONResponse:
     """Return a card with its earlier versions and the code behind each one.
 
+    Reading revisions, scripts and Claude Code transcripts is disk work, so it
+    runs off the event loop that also serves the board's WebSocket.
+    """
+    from starlette.concurrency import run_in_threadpool
+
+    body = await run_in_threadpool(
+        _card_history, server, request.path_params["card_id"]
+    )
+    status = 404 if "error" in body else 200
+    return JSONResponse(body, status_code=status)
+
+
+def _card_history(server: DisplayServer, raw: str) -> dict[str, Any]:
+    """The history endpoint's body, or ``{"error": ...}`` for an unknown card.
+
     ``code`` maps each version's script SHA-256 to the copy the study kept;
     versions whose code has no copy (stdin, ``python -c``) are left out.
     ``sessions`` maps ``host/session_id`` to what the host recorded about
     each version's agent session (title, turns with models, a link back).
     """
-    raw = request.path_params["card_id"]
     card, store = _find_card(server, raw)
     if card is None or store is None:
-        return JSONResponse({"error": f"Card {raw} not found"}, status_code=404)
+        return {"error": f"Card {raw} not found"}
 
     revisions = store.list_revisions(card.card_id)
     hashes = [card.code.sha256 if card.code else None] + [
@@ -148,14 +162,12 @@ async def api_card_history(server: DisplayServer, request: Request) -> JSONRespo
     contexts = [_serialize_card(card)["agent"]] + [
         r.get("card", {}).get("agent") for r in revisions
     ]
-    return JSONResponse(
-        {
-            "card": _serialize_card(card),
-            "revisions": revisions,
-            "code": code,
-            "sessions": session_details(data_dir, contexts),
-        }
-    )
+    return {
+        "card": _serialize_card(card),
+        "revisions": revisions,
+        "code": code,
+        "sessions": session_details(data_dir, contexts),
+    }
 
 
 async def api_card_delete(server: DisplayServer, request: Request) -> JSONResponse:

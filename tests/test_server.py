@@ -1105,6 +1105,16 @@ class TestCardHistory:
         body = client.get(f"/api/card/{card.card_id}/history").json()
         assert body["code"] == {}
 
+    def test_a_hand_edited_hash_is_skipped(self, client, store):
+        card = render(
+            "x",
+            store=store,
+            code=CodeOrigin(path="a.py", line=1, sha256="/etc/passwd"),
+        )
+        resp = client.get(f"/api/card/{card.card_id}/history")
+        assert resp.status_code == 200
+        assert resp.json()["code"] == {}
+
     def test_finds_a_card_by_prefix(self, client, store):
         card = render("x", store=store)
         resp = client.get(f"/api/card/{card.card_id[:8]}/history")

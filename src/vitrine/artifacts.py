@@ -45,6 +45,9 @@ from vitrine._types import (
 
 logger = logging.getLogger(__name__)
 
+# Script copies are named by their SHA-256; anything else must not reach a path.
+_CODE_HASH = re.compile(r"[0-9a-f]{1,64}")
+
 
 def _duckdb_safe_path(path: Path) -> str:
     """Escape a file path for safe interpolation into DuckDB SQL string literals.
@@ -370,6 +373,10 @@ class ArtifactStore:
         Copies live under ``code/``, named by the script's SHA-256, so a
         card still shows the code that made it after the script changes.
         """
+        if not _CODE_HASH.fullmatch(sha256 or ""):
+            raise ValueError(f"not a SHA-256 hex digest: {sha256!r}")
+        if not re.fullmatch(r"\.[A-Za-z0-9]{1,10}", suffix):
+            suffix = ".txt"
         path = self.session_dir / "code" / f"{sha256}{suffix}"
         if path.exists():
             return
@@ -386,8 +393,10 @@ class ArtifactStore:
 
     def read_code(self, sha256: str) -> str | None:
         """The kept copy of a script, by its SHA-256, or None."""
+        if not _CODE_HASH.fullmatch(sha256 or ""):
+            return None
         for path in (self.session_dir / "code").glob(f"{sha256}.*"):
-            return path.read_text(errors="replace")
+            return path.read_text(encoding="utf-8", errors="replace")
         return None
 
     def _append_to_index(self, card_dict: dict[str, Any]) -> None:

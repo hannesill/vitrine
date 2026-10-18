@@ -264,35 +264,40 @@ def show(
             why=why,
         )
         _keep_calling_code(replace_store, caller)
-        old = replace_store.get_card(replace)
-        changed = old is None or (
-            not replace_store.same_content(replace, card.card_id)
-            or (why is not None and why != old.why)
-        )
-        if changed and old is not None and _keep_revision:
-            replace_store.keep_revision(replace)
-        # The original card takes everything render() produced, and keeps its
-        # id: its artifact moves under that id too, because the server finds
-        # an artifact's study through the card that owns it.
-        rendered = _serialize_card(card)
-        updated = replace_store.update_card(
-            replace,
-            **{
-                key: rendered.get(key)
-                for key in (
-                    "card_type",
-                    "title",
-                    "description",
-                    "preview",
-                    "artifact_type",
-                    "provenance",
-                    # A re-run that changes nothing keeps who made the card.
-                    *(("agent", "code") if changed else ()),
-                    *(("why",) if why is not None else ()),
-                )
-            },
-            artifact_id=replace if card.artifact_id is not None else None,
-        )
+        try:
+            old = replace_store.get_card(replace)
+            changed = old is None or (
+                not replace_store.same_content(replace, card.card_id)
+                or (why is not None and why != old.why)
+            )
+            if changed and old is not None and _keep_revision:
+                replace_store.keep_revision(replace)
+            # The original card takes everything render() produced, and keeps
+            # its id: its artifact moves under that id too, because the server
+            # finds an artifact's study through the card that owns it.
+            rendered = _serialize_card(card)
+            updated = replace_store.update_card(
+                replace,
+                **{
+                    key: rendered.get(key)
+                    for key in (
+                        "card_type",
+                        "title",
+                        "description",
+                        "preview",
+                        "artifact_type",
+                        "provenance",
+                        # A re-run that changes nothing keeps who made the card.
+                        *(("agent", "code") if changed else ()),
+                        *(("why",) if why is not None else ()),
+                    )
+                },
+                artifact_id=replace if card.artifact_id is not None else None,
+            )
+        except BaseException:
+            # Do not leave the copy render() indexed as a second card.
+            replace_store.remove_from_index(card.card_id)
+            raise
         if updated is not None:
             if card.artifact_id is not None:
                 replace_store.adopt_artifacts(card.card_id, replace)

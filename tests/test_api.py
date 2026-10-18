@@ -306,6 +306,18 @@ class TestReplace:
         [revision] = store.list_revisions(card_id)
         assert revision["card"]["why"] == "First reason"
 
+    def test_failed_replace_leaves_no_extra_card(self, store, mock_server, monkeypatch):
+        card_id = display.show("v1")
+
+        def broken(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(store, "keep_revision", broken)
+        with pytest.raises(OSError):
+            display.show("v2", replace=card_id)
+        assert [c.card_id for c in store.list_cards()] == [card_id]
+        assert store.get_card(card_id).preview["text"] == "v1"
+
 
 class TestAgentSession:
     def test_show_records_the_agent_session(self, store, mock_server, monkeypatch):
