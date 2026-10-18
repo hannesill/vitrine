@@ -143,6 +143,12 @@ def _project_root() -> Path | None:
     return get_vitrine_dir().parent
 
 
+def _declared_source(card: CardDescriptor) -> tuple[Any, ...] | None:
+    """What ``source=`` declared for a card, without when it was recorded."""
+    p = card.provenance
+    return (p.source, p.dataset, p.query) if p else None
+
+
 def _keep_calling_code(store: Any, caller: CallingCode | None) -> None:
     """Keep a copy of the script a card came from in the card's study."""
     if store is None or caller is None or caller.source is None:
@@ -270,6 +276,7 @@ def show(
                 changed = old is None or (
                     not replace_store.same_content(replace, card.card_id)
                     or (why is not None and why != old.why)
+                    or _declared_source(card) != _declared_source(old)
                 )
                 if changed and old is not None and _keep_revision:
                     replace_store.keep_revision(replace)
@@ -287,9 +294,9 @@ def show(
                             "description",
                             "preview",
                             "artifact_type",
-                            "provenance",
-                            # A re-run that changes nothing keeps who made the card.
-                            *(("agent", "code") if changed else ()),
+                            # A re-run that changes nothing keeps who made the
+                            # card, and when its source was recorded.
+                            *(("provenance", "agent", "code") if changed else ()),
                             *(("why",) if why is not None else ()),
                         )
                     },
@@ -300,8 +307,9 @@ def show(
                 replace_store.remove_from_index(card.card_id)
                 raise
             if updated is not None:
-                if card.artifact_id is not None:
-                    replace_store.adopt_artifacts(card.card_id, replace)
+                # Also clears the old files when the new version is inline
+                # (text, values): they would linger at /api/artifact.
+                replace_store.adopt_artifacts(card.card_id, replace)
                 # Drop the copy render() indexed, so the study lists the card once.
                 replace_store.remove_from_index(card.card_id)
         if updated is not None and _st._study_manager is not None:
