@@ -88,6 +88,9 @@ def _validated(record: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(value, str) or not value:
             raise ValueError(f"{name} must be a non-empty string")
         out[name] = value
+    if "/" in out["host"]:
+        # Records are keyed host/session_id; a slash in the host makes keys collide.
+        raise ValueError("host must not contain '/'")
     if "title" in record:
         if record["title"] is not None and not isinstance(record["title"], str):
             raise ValueError("title must be a string or null")
@@ -113,7 +116,9 @@ def _validated_turn(turn: Any) -> dict[str, Any]:
         raise ValueError("each turn must be an object")
     started_at = turn.get("started_at")
     try:
-        datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
+        if not isinstance(started_at, str):
+            raise ValueError
+        datetime.fromisoformat(started_at.replace("Z", "+00:00"))
     except ValueError:
         raise ValueError(
             f"each turn needs started_at as an ISO timestamp, got {started_at!r}"

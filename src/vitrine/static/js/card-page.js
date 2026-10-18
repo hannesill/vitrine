@@ -491,6 +491,8 @@ function describeChange(a, b, sessions) {
   if ((a.title || '') !== (b.title || '')) {
     changes.push('Title \u201c' + (a.title || '') + '\u201d \u2192 \u201c' + (b.title || '') + '\u201d');
   }
+  if ((a.description || '') !== (b.description || '')) changes.push('Description changed');
+  var tableLooksSame = false;
   if (a.card_type === b.card_type) {
     if (b.card_type === 'table') {
       var sa = pa.shape || [];
@@ -502,9 +504,12 @@ function describeChange(a, b, sessions) {
       var removed = ca.filter(function(c) { return cb.indexOf(c) === -1; });
       if (added.length) changes.push('Columns added: ' + added.join(', '));
       if (removed.length) changes.push('Columns removed: ' + removed.join(', '));
-      if (sa[0] === sb[0] && !added.length && !removed.length
-          && JSON.stringify(pa.preview_rows) !== JSON.stringify(pb.preview_rows)) {
-        changes.push('Values changed');
+      if (sa[0] === sb[0] && !added.length && !removed.length) {
+        if (JSON.stringify(pa.preview_rows) !== JSON.stringify(pb.preview_rows)) {
+          changes.push('Values changed');
+        } else {
+          tableLooksSame = true;
+        }
       }
     } else if (b.card_type === 'keyvalue') {
       var ia = pa.items || {};
@@ -523,6 +528,12 @@ function describeChange(a, b, sessions) {
       changes.push(b.card_type === 'plotly' ? 'Chart changed'
         : b.card_type === 'image' ? 'Figure changed' : 'Content changed');
     }
+  }
+
+  // A version is only kept when the content changed, so a table that looks the
+  // same in its preview changed further down.
+  if (tableLooksSame && !changes.length && (a.why || null) === (b.why || null)) {
+    changes.push('Values changed beyond the rows shown');
   }
 
   var codeA = a.code || {};

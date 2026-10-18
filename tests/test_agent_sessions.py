@@ -133,6 +133,15 @@ class TestRecordAgentSession:
                 "started_at",
             ),
             ({"host": "lincei", "session_id": "s", "title": 3}, "title"),
+            ({"host": "a/b", "session_id": "c"}, "host"),
+            (
+                {
+                    "host": "lincei",
+                    "session_id": "s",
+                    "turns": [{"started_at": 20261018}],
+                },
+                "started_at",
+            ),
         ],
     )
     def test_rejects_bad_records(self, tmp_path, record, message):
