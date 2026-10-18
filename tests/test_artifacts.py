@@ -289,6 +289,43 @@ class TestCodeAndWhy:
         assert store.read_code("ab12") == "dose = 5  # µg/kg/min → ±\n"
 
 
+class TestSameContent:
+    def _card(self, store, card_id, preview):
+        store.store_card(
+            CardDescriptor(card_id=card_id, card_type=CardType.TABLE, preview=preview)
+        )
+
+    def test_equal_artifacts(self, store, sample_df):
+        self._card(store, "a", {"x": 1})
+        self._card(store, "b", {"x": 1})
+        store.store_dataframe("a", sample_df)
+        store.store_dataframe("b", sample_df.copy())
+        assert store.same_content("a", "b")
+
+    def test_artifacts_differing_beyond_the_preview(self, store, sample_df):
+        self._card(store, "a", {"x": 1})
+        self._card(store, "b", {"x": 1})
+        store.store_dataframe("a", sample_df)
+        changed = sample_df.copy()
+        changed.loc[4, "score"] = 0.0
+        store.store_dataframe("b", changed)
+        assert not store.same_content("a", "b")
+
+    def test_does_not_read_whole_files(self, store, monkeypatch):
+        from pathlib import Path
+
+        self._card(store, "a", {"x": 1})
+        self._card(store, "b", {"x": 1})
+        (store._artifacts_dir / "a.parquet").write_bytes(b"0" * 100_000)
+        (store._artifacts_dir / "b.parquet").write_bytes(b"0" * 100_000)
+
+        def no_read_bytes(self):
+            raise AssertionError("read the whole file")
+
+        monkeypatch.setattr(Path, "read_bytes", no_read_bytes)
+        assert store.same_content("a", "b")
+
+
 class TestRevisions:
     def test_keeps_the_card_and_its_artifact(self, store, sample_card, sample_df):
         store.store_card(sample_card)

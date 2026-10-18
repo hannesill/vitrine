@@ -20,6 +20,7 @@ stays lightweight. The artifact store uses a session directory layout:
 from __future__ import annotations
 
 import contextlib
+import filecmp
 import io
 import json
 import logging
@@ -295,6 +296,18 @@ class ArtifactStore:
     def _revisions_path(self, card_id: str) -> Path:
         return self.session_dir / "revisions" / f"{card_id}.json"
 
+    @contextlib.contextmanager
+    def replacing(self, card_id: str) -> Iterator[None]:
+        """Hold a card's replace lock while ``show(replace=...)`` rewrites it.
+
+        Two processes replacing the same card would otherwise both snapshot
+        the same old version before either updates it.
+        """
+        lock_dir = self.session_dir / "revisions"
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        with self._changing(lock_dir / f"{card_id}-replace"):
+            yield
+
     def keep_revision(self, card_id: str) -> int | None:
         """Keep a card's current version before ``show(replace=...)`` overwrites it.
 
@@ -347,13 +360,12 @@ class ArtifactStore:
         if any(entries[card_id].get(f) != entries[other_id].get(f) for f in fields):
             return False
 
-        def artifact_bytes(cid: str) -> list[tuple[str, bytes]]:
-            return [
-                (p.suffix, p.read_bytes())
-                for p in sorted(self._artifacts_dir.glob(f"{cid}.*"))
-            ]
-
-        return artifact_bytes(card_id) == artifact_bytes(other_id)
+        ours = sorted(self._artifacts_dir.glob(f"{card_id}.*"))
+        theirs = sorted(self._artifacts_dir.glob(f"{other_id}.*"))
+        if [p.suffix for p in ours] != [p.suffix for p in theirs]:
+            return False
+        # filecmp compares sizes first, then reads both files in small chunks.
+        return all(filecmp.cmp(a, b, shallow=False) for a, b in zip(ours, theirs))
 
     def list_revisions(self, card_id: str) -> list[dict[str, Any]]:
         """A card's earlier versions, oldest first.

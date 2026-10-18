@@ -318,6 +318,37 @@ class TestReplace:
         assert [c.card_id for c in store.list_cards()] == [card_id]
         assert store.get_card(card_id).preview["text"] == "v1"
 
+    def test_concurrent_replaces_each_keep_a_distinct_revision(
+        self, store, mock_server, monkeypatch
+    ):
+        import threading
+        import time
+
+        card_id = display.show("v1")
+        original = store.keep_revision
+
+        def slow_keep_revision(cid):
+            number = original(cid)
+            time.sleep(0.2)  # widen the gap between snapshot and update
+            return number
+
+        monkeypatch.setattr(store, "keep_revision", slow_keep_revision)
+        threads = [
+            threading.Thread(
+                target=display.show, args=(text,), kwargs={"replace": card_id}
+            )
+            for text in ("v2", "v3")
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        texts = [r["card"]["preview"]["text"] for r in store.list_revisions(card_id)]
+        current = store.get_card(card_id).preview["text"]
+        assert texts[0] == "v1"
+        assert sorted([*texts[1:], current]) == ["v2", "v3"]
+
 
 class TestAgentSession:
     def test_show_records_the_agent_session(self, store, mock_server, monkeypatch):
@@ -362,6 +393,18 @@ class TestAgentSession:
         record = load_agent_sessions(tmp_path / ".vitrine")["lincei/thr_1"]
         assert record["title"] == "Sepsis cohort"
         assert record["turns"][0]["model"] == "m"
+
+    def test_record_agent_session_can_clear_a_title(self, tmp_path, monkeypatch):
+        from vitrine.agent_sessions import load_agent_sessions
+
+        monkeypatch.setenv("VITRINE_DATA_DIR", str(tmp_path / ".vitrine"))
+        display.record_agent_session(
+            "lincei", "thr_1", title="Old", open_url="https://x"
+        )
+        display.record_agent_session("lincei", "thr_1", title=None)
+        record = load_agent_sessions(tmp_path / ".vitrine")["lincei/thr_1"]
+        assert record["title"] is None
+        assert record["open_url"] == "https://x"
 
     def test_study_remembers_the_claude_code_session(
         self, study_manager, mock_server, monkeypatch

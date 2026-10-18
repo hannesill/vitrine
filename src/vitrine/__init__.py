@@ -264,47 +264,48 @@ def show(
             why=why,
         )
         _keep_calling_code(replace_store, caller)
-        try:
-            old = replace_store.get_card(replace)
-            changed = old is None or (
-                not replace_store.same_content(replace, card.card_id)
-                or (why is not None and why != old.why)
-            )
-            if changed and old is not None and _keep_revision:
-                replace_store.keep_revision(replace)
-            # The original card takes everything render() produced, and keeps
-            # its id: its artifact moves under that id too, because the server
-            # finds an artifact's study through the card that owns it.
-            rendered = _serialize_card(card)
-            updated = replace_store.update_card(
-                replace,
-                **{
-                    key: rendered.get(key)
-                    for key in (
-                        "card_type",
-                        "title",
-                        "description",
-                        "preview",
-                        "artifact_type",
-                        "provenance",
-                        # A re-run that changes nothing keeps who made the card.
-                        *(("agent", "code") if changed else ()),
-                        *(("why",) if why is not None else ()),
-                    )
-                },
-                artifact_id=replace if card.artifact_id is not None else None,
-            )
-        except BaseException:
-            # Do not leave the copy render() indexed as a second card.
-            replace_store.remove_from_index(card.card_id)
-            raise
-        if updated is not None:
-            if card.artifact_id is not None:
-                replace_store.adopt_artifacts(card.card_id, replace)
-            # Drop the copy render() indexed, so the study lists the card once.
-            replace_store.remove_from_index(card.card_id)
-            if _st._study_manager is not None:
-                _st._study_manager.refresh()
+        with replace_store.replacing(replace):
+            try:
+                old = replace_store.get_card(replace)
+                changed = old is None or (
+                    not replace_store.same_content(replace, card.card_id)
+                    or (why is not None and why != old.why)
+                )
+                if changed and old is not None and _keep_revision:
+                    replace_store.keep_revision(replace)
+                # The original card takes everything render() produced, and keeps
+                # its id: its artifact moves under that id too, because the server
+                # finds an artifact's study through the card that owns it.
+                rendered = _serialize_card(card)
+                updated = replace_store.update_card(
+                    replace,
+                    **{
+                        key: rendered.get(key)
+                        for key in (
+                            "card_type",
+                            "title",
+                            "description",
+                            "preview",
+                            "artifact_type",
+                            "provenance",
+                            # A re-run that changes nothing keeps who made the card.
+                            *(("agent", "code") if changed else ()),
+                            *(("why",) if why is not None else ()),
+                        )
+                    },
+                    artifact_id=replace if card.artifact_id is not None else None,
+                )
+            except BaseException:
+                # Do not leave the copy render() indexed as a second card.
+                replace_store.remove_from_index(card.card_id)
+                raise
+            if updated is not None:
+                if card.artifact_id is not None:
+                    replace_store.adopt_artifacts(card.card_id, replace)
+                # Drop the copy render() indexed, so the study lists the card once.
+                replace_store.remove_from_index(card.card_id)
+        if updated is not None and _st._study_manager is not None:
+            _st._study_manager.refresh()
         # Broadcast an update (not add) so frontend re-renders in place
         update_card = updated if updated else card
         if _st._remote_url:
@@ -406,12 +407,15 @@ def show(
     )
 
 
+_UNSET: Any = object()
+
+
 def record_agent_session(
     host: str,
     session_id: str,
     *,
-    title: str | None = None,
-    open_url: str | None = None,
+    title: str | None = _UNSET,
+    open_url: str | None = _UNSET,
     turns: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Record what a host knows about an agent session (ADR-0002).
@@ -424,8 +428,10 @@ def record_agent_session(
     Args:
         host: The program running the agent, as in ``VITRINE_AGENT_HOST``.
         session_id: The host's session ID, as in ``VITRINE_AGENT_SESSION_ID``.
-        title: The session's current title.
-        open_url: A link that opens the session in the host.
+        title: The session's current title; ``None`` clears it. Left out,
+            the stored title stays.
+        open_url: A link that opens the session in the host; ``None``
+            clears it. Left out, the stored link stays.
         turns: Turns to add or update, each with ``started_at`` (ISO time)
             and optionally ``turn_id``, ``provider`` and ``model``.
 
@@ -440,9 +446,9 @@ def record_agent_session(
     from vitrine.agent_sessions import record_agent_session as _record
 
     record: dict[str, Any] = {"host": host, "session_id": session_id}
-    if title is not None:
+    if title is not _UNSET:
         record["title"] = title
-    if open_url is not None:
+    if open_url is not _UNSET:
         record["open_url"] = open_url
     if turns is not None:
         record["turns"] = turns
