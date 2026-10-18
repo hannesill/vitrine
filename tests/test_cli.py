@@ -846,3 +846,38 @@ class TestOwnerPid:
             result = runner.invoke(app, ["status", "--json"])
 
         assert _parse_single_json_line(result.output)["owner_pids"] is None
+
+
+class TestRecordSessionCommand:
+    def _record(self, tmp_path, monkeypatch, stdin, *args):
+        monkeypatch.setenv("VITRINE_DATA_DIR", str(tmp_path / ".vitrine"))
+        return runner.invoke(app, ["record-session", *args], input=stdin)
+
+    def test_records_a_session_from_stdin(self, tmp_path, monkeypatch):
+        from vitrine.agent_sessions import load_agent_sessions
+
+        stdin = json.dumps({"host": "lincei", "session_id": "thr_1", "title": "Sepsis"})
+        result = self._record(tmp_path, monkeypatch, stdin)
+        assert result.exit_code == 0
+        sessions = load_agent_sessions(tmp_path / ".vitrine")
+        assert sessions["lincei/thr_1"]["title"] == "Sepsis"
+
+    def test_json_output(self, tmp_path, monkeypatch):
+        stdin = json.dumps({"host": "lincei", "session_id": "thr_1"})
+        result = self._record(tmp_path, monkeypatch, stdin, "--json")
+        payload = _parse_single_json_line(result.output)
+        assert payload["status"] == "recorded"
+        assert payload["session"]["session_id"] == "thr_1"
+
+    def test_rejects_invalid_json(self, tmp_path, monkeypatch):
+        result = self._record(tmp_path, monkeypatch, "{not json", "--json")
+        assert result.exit_code == 1
+        assert _parse_single_json_line(result.output)["status"] == "failed"
+
+    def test_rejects_a_bad_record(self, tmp_path, monkeypatch):
+        stdin = json.dumps(
+            {"host": "lincei", "session_id": "s", "open_url": "javascript:x"}
+        )
+        result = self._record(tmp_path, monkeypatch, stdin, "--json")
+        assert result.exit_code == 1
+        assert "open_url" in _parse_single_json_line(result.output)["error"]

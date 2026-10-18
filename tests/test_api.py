@@ -285,6 +285,27 @@ class TestReplace:
         display.show("orphan", replace="nonexistent")
         assert store.list_revisions("nonexistent") == []
 
+    def test_replace_that_changes_nothing_keeps_no_revision(self, store, mock_server):
+        df = pd.DataFrame({"x": [1, 2, 3]})
+        card_id = display.show(df, title="Same")
+        display.show(df.copy(), title="Same", replace=card_id)
+        assert store.list_revisions(card_id) == []
+
+    def test_replace_that_changes_nothing_keeps_who_made_it(
+        self, store, mock_server, monkeypatch
+    ):
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "maker")
+        card_id = display.show("same")
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "rerun")
+        display.show("same", replace=card_id)
+        assert store.get_card(card_id).agent.session_id == "maker"
+
+    def test_replace_with_only_a_new_why_keeps_a_revision(self, store, mock_server):
+        card_id = display.show("same", why="First reason")
+        display.show("same", why="Better reason", replace=card_id)
+        [revision] = store.list_revisions(card_id)
+        assert revision["card"]["why"] == "First reason"
+
 
 class TestAgentSession:
     def test_show_records_the_agent_session(self, store, mock_server, monkeypatch):
@@ -311,6 +332,24 @@ class TestAgentSession:
         monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "claude-1")
         display.show("hello")
         assert mock_server.pushed_cards[0].agent.session_id == "claude-1"
+
+    def test_record_agent_session_writes_to_the_data_directory(
+        self, tmp_path, monkeypatch
+    ):
+        from vitrine.agent_sessions import load_agent_sessions
+
+        monkeypatch.setenv("VITRINE_DATA_DIR", str(tmp_path / ".vitrine"))
+        display.record_agent_session(
+            "lincei",
+            "thr_1",
+            title="Sepsis cohort",
+            turns=[
+                {"turn_id": "t1", "started_at": "2026-10-18T10:00:00Z", "model": "m"}
+            ],
+        )
+        record = load_agent_sessions(tmp_path / ".vitrine")["lincei/thr_1"]
+        assert record["title"] == "Sepsis cohort"
+        assert record["turns"][0]["model"] == "m"
 
     def test_study_remembers_the_claude_code_session(
         self, study_manager, mock_server, monkeypatch

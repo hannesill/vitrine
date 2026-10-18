@@ -206,6 +206,7 @@ vitrine restart                        # Restart server
 vitrine studies                        # List all studies
 vitrine clean 7d                       # Remove studies older than 7 days
 vitrine export report.html --study sepsis-v1
+vitrine record-session < session.json  # Store a host's session title, models and link
 ```
 
 ### Host applications
@@ -235,6 +236,17 @@ The exit code is 0, 1 for `failed`, and 3 for `status --json` when no server run
 - A PID can be reused once its process has exited. The server records each owner's start time on Linux, macOS and Windows and does not mistake a later process with the same PID for the owner. Elsewhere it compares PIDs only, and a PID reused within the two seconds between checks keeps the server running until that process exits.
 
 **Agent sessions.** Every card records the agent session that made it ([ADR-0002](docs/adr/0002-cards-reference-agent-sessions.md)). A host that runs agents sets `VITRINE_AGENT_HOST` (its name), `VITRINE_AGENT_SESSION_ID` and, if it has one, `VITRINE_AGENT_TURN_ID` in each agent's environment. Without them, Vitrine recognises a Claude Code session by `CLAUDE_CODE_SESSION_ID`, and records anything else as host `unknown`.
+
+The host then tells Vitrine what it knows about each session, and again whenever that changes, so card pages can show the session's title, the model behind each turn and a link back:
+
+```bash
+echo '{"host": "lincei", "session_id": "thr_8c41f2", "title": "Lactate and mortality",
+       "open_url": "lincei://thread/thr_8c41f2",
+       "turns": [{"turn_id": "turn-3", "started_at": "2026-10-18T10:00:00Z",
+                  "provider": "claude", "model": "claude-opus-5-5"}]}' | vitrine record-session --json
+```
+
+`vitrine.record_agent_session()` does the same from Python. Both write `agent_sessions.json` in the data directory, so the server need not be running; fields left out keep their stored values, and turns merge by `turn_id`. Claude Code sessions need no host: Vitrine reads their title and models from the session transcript.
 
 ## Python API
 
@@ -272,6 +284,10 @@ get_selection(card_id) -> pd.DataFrame
 get_card(card_id) -> CardDescriptor | None
 on_event(callback) -> None
 list_annotations(study=None) -> list[dict]
+
+# Host applications
+record_agent_session(host, session_id, *, title=None, open_url=None,
+                     turns=None) -> dict
 ```
 
 ## Roadmap

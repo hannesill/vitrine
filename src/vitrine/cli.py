@@ -9,6 +9,7 @@ Usage:
     vitrine studies
     vitrine clean OLDER_THAN
     vitrine export PATH [--format FORMAT] [--study STUDY]
+    vitrine record-session [--json] < RECORD.json
 """
 
 from __future__ import annotations
@@ -512,6 +513,38 @@ def studies() -> None:
         start = s.get("start_time", "?")
         cards = s.get("card_count", 0)
         console.print(f"  [green]{label:<30s}[/green] {cards:>3d} cards   {start}")
+
+
+@app.command("record-session")
+def record_session(
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit the stored record as one JSON line."
+    ),
+) -> None:
+    """Record what a host knows about an agent session, read as JSON from stdin.
+
+    The object has host and session_id, and optionally title, open_url and
+    turns (each with started_at, and optionally turn_id, provider and
+    model). Card pages show it next to the cards that session made.
+    """
+    from vitrine._utils import get_vitrine_dir
+    from vitrine.agent_sessions import record_agent_session
+
+    try:
+        record = json.loads(sys.stdin.read())
+        if not isinstance(record, dict):
+            raise ValueError("expected a JSON object")
+        stored = record_agent_session(get_vitrine_dir(), record)
+    except ValueError as exc:  # json.JSONDecodeError is a ValueError
+        if json_output:
+            _emit_json({"status": "failed", "error": str(exc)})
+        else:
+            _error(f"Could not record the session: {exc}")
+        raise typer.Exit(EXIT_FAILURE) from exc
+    if json_output:
+        _emit_json({"status": "recorded", "session": stored})
+    else:
+        _success(f"Recorded {stored['host']} session {stored['session_id']}.")
 
 
 @app.command()

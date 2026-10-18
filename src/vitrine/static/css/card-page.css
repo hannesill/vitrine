@@ -180,6 +180,21 @@ body.card-page-open #dismiss-toggle {
 
 .card-page-answer { font-weight: 600; }
 
+.card-page-session-title {
+  font-family: var(--font-head);
+  font-weight: 700;
+}
+
+.card-page-model {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+a.card-page-small-btn {
+  display: inline-block;
+  text-decoration: none;
+}
+
 .card-page-small-btn {
   margin-left: 8px;
   padding: 1px 7px;
@@ -226,6 +241,7 @@ body.card-page-open #dismiss-toggle {
 }
 
 .card-page-code-view {
+  position: relative;  /* line offsets are measured from the viewer when scrolling to the call */
   max-height: 360px;
   overflow: auto;
   padding: 8px 0;

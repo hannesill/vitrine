@@ -327,6 +327,31 @@ class ArtifactStore:
             self._write_json(path, revisions)
         return number
 
+    def same_content(self, card_id: str, other_id: str) -> bool:
+        """Whether two cards in this store show the same thing.
+
+        Compares type, title, description, preview and artifact bytes, so a
+        script re-run that produces the same result is recognised.
+        """
+        entries = {
+            d.get("card_id"): d
+            for d in self._read_index()
+            if d.get("card_id") in (card_id, other_id)
+        }
+        if card_id not in entries or other_id not in entries:
+            return False
+        fields = ("card_type", "title", "description", "preview")
+        if any(entries[card_id].get(f) != entries[other_id].get(f) for f in fields):
+            return False
+
+        def artifact_bytes(cid: str) -> list[tuple[str, bytes]]:
+            return [
+                (p.suffix, p.read_bytes())
+                for p in sorted(self._artifacts_dir.glob(f"{cid}.*"))
+            ]
+
+        return artifact_bytes(card_id) == artifact_bytes(other_id)
+
     def list_revisions(self, card_id: str) -> list[dict[str, Any]]:
         """A card's earlier versions, oldest first.
 
