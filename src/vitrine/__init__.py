@@ -329,6 +329,10 @@ def show(
             f'Timed out waiting for "{_wait_label}" '
             f'-- use wait_for("{card.card_id}") to re-attach'
         )
+    elif action == "error":
+        print(
+            f'Error waiting for "{_wait_label}": {result.get("message") or "unknown"}'
+        )
     else:
         print(f'Response received: {action} on "{_wait_label}"')
 
@@ -399,7 +403,7 @@ def confirm(
         timeout: Seconds to wait (default 600).
 
     Returns:
-        True if confirmed, False if skipped or timed out.
+        True if confirmed, False if skipped, timed out, or on error.
     """
     r = show(message, wait=True, study=study, timeout=timeout)
     return r.action == "confirm"
@@ -424,9 +428,13 @@ def ask(
 
     Returns:
         What the researcher typed, if anything; otherwise the option they
-        clicked, ``"skip"``, or ``"timeout"`` if no response.
+        clicked, ``"skip"``, ``"timeout"`` if no response, or ``"error"``
+        if no server could be reached.
     """
     r = show(question, wait=True, actions=options, study=study, timeout=timeout)
+    if r.action == DisplayResponse.ERROR:
+        # message holds the error reason here, not text the researcher typed
+        return r.action
     typed = (r.message or "").strip()
     return typed or r.action
 
@@ -515,6 +523,9 @@ def wait_for(card_id: str, timeout: float = 600) -> DisplayResponse:
     response UI is re-enabled in the browser and the call blocks until the
     researcher responds or the new timeout expires.
 
+    Connects to the display server the same way ``show()`` does, so it
+    works from a fresh process (e.g. a later agent turn).
+
     Args:
         card_id: Card identifier (from ``DisplayResponse.card_id`` or
             ``DisplayHandle``).
@@ -522,8 +533,13 @@ def wait_for(card_id: str, timeout: float = 600) -> DisplayResponse:
 
     Returns:
         DisplayResponse with the researcher's action, message, and values.
+        ``action`` is ``"timeout"`` if the new timeout expires, or
+        ``"error"`` (with ``message`` set) if the card does not exist or
+        no server could be reached.
     """
     from vitrine.artifacts import _serialize_card
+
+    _client._ensure_started()
 
     # Strip slug suffix (e.g. "a1b2c3-protocol" -> "a1b2c3")
     id_prefix = card_id.split("-")[0]
@@ -607,6 +623,8 @@ def wait_for(card_id: str, timeout: float = 600) -> DisplayResponse:
             f'Timed out waiting for "{_label}" '
             f'-- use wait_for("{card.card_id}") to re-attach'
         )
+    elif action == "error":
+        print(f'Error waiting for "{_label}": {result.get("message") or "unknown"}')
     else:
         print(f'Response received: {action} on "{_label}"')
 
@@ -637,6 +655,8 @@ def study_context(study: str) -> dict[str, Any]:
         pending_responses, and current_selections.
     """
     _client._ensure_study_manager()
+    # Pick up a running server's live state, but don't start one just to read.
+    _client._attach_existing_server()
     if _st._study_manager is not None:
         ctx = _st._study_manager.build_context(study)
         # In-process enrichment with live selection + pending response state
