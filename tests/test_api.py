@@ -465,6 +465,44 @@ class TestDiscovery:
         )
         assert display.server_status() is None
 
+    def test_ensure_started_fast_path_keeps_remote(self, monkeypatch, tmp_path):
+        """Already connected: one discovery, no re-connect through the lock."""
+        monkeypatch.setenv("VITRINE_DATA_DIR", str(tmp_path / "vitrine"))
+        info = _server_metadata(tmp_path / "vitrine" / ".server.json")
+        calls = []
+        monkeypatch.setattr(
+            _client_mod, "_discover_server", lambda: calls.append(1) or info
+        )
+        _st._remote_url = info["api_url"]
+        _st._auth_token = info["token"]
+
+        _client_mod._ensure_started()
+
+        assert len(calls) == 1
+        assert _st._remote_url == info["api_url"]
+        assert _st._study_manager is None  # slow path never ran
+
+    def test_ensure_started_reconnects_when_server_moved(self, monkeypatch, tmp_path):
+        """A different server in the PID file replaces the stale connection."""
+        monkeypatch.setenv("VITRINE_DATA_DIR", str(tmp_path / "vitrine"))
+        info = _server_metadata(
+            tmp_path / "vitrine" / ".server.json",
+            port=7742,
+            url="http://vitrine.localhost:7742",
+            api_url="http://127.0.0.1:7742",
+            token="new-tok",
+            session_id="new",
+        )
+        monkeypatch.setattr(_client_mod, "_discover_server", lambda: info)
+        _st._remote_url = "http://127.0.0.1:7741"
+        _st._auth_token = "old-tok"
+
+        _client_mod._ensure_started()
+
+        assert _st._remote_url == "http://127.0.0.1:7742"
+        assert _st._auth_token == "new-tok"
+        assert _st._session_id == "new"
+
 
 class TestServerLifecycle:
     def test_server_status_returns_none_without_pid_file(self, monkeypatch):
