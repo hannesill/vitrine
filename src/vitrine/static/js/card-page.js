@@ -492,6 +492,13 @@ function describeChange(a, b, sessions) {
     changes.push('Title \u201c' + (a.title || '') + '\u201d \u2192 \u201c' + (b.title || '') + '\u201d');
   }
   if ((a.description || '') !== (b.description || '')) changes.push('Description changed');
+  var srcA = a.provenance || {};
+  var srcB = b.provenance || {};
+  if ((srcA.source || '') !== (srcB.source || '')) {
+    changes.push('Source ' + (srcA.source || 'none') + ' \u2192 ' + (srcB.source || 'none'));
+  } else if ((srcA.dataset || '') !== (srcB.dataset || '') || (srcA.query || '') !== (srcB.query || '')) {
+    changes.push('Source changed');
+  }
   var tableLooksSame = false;
   if (a.card_type === b.card_type) {
     if (b.card_type === 'table') {

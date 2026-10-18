@@ -349,6 +349,32 @@ class TestReplace:
         assert texts[0] == "v1"
         assert sorted([*texts[1:], current]) == ["v2", "v3"]
 
+    def test_replace_that_changes_nothing_keeps_the_source(self, store, mock_server):
+        card_id = display.show("same", source="cohort.sql")
+        before = store.get_card(card_id).provenance
+        display.show("same", source="cohort.sql", replace=card_id)
+        assert store.get_card(card_id).provenance == before
+        assert store.list_revisions(card_id) == []
+
+    def test_replace_with_only_a_new_source_keeps_a_revision(self, store, mock_server):
+        card_id = display.show("same", source="draft.sql")
+        display.show("same", source="final.sql", replace=card_id)
+        assert store.get_card(card_id).provenance.source == "final.sql"
+        [revision] = store.list_revisions(card_id)
+        assert revision["card"]["provenance"]["source"] == "draft.sql"
+
+    def test_replacing_a_table_with_text_drops_the_old_artifact(
+        self, store, mock_server
+    ):
+        card_id = display.show(pd.DataFrame({"x": [1, 2, 3]}))
+        display.show("now text", replace=card_id)
+        assert list(store._artifacts_dir.glob(f"{card_id}.*")) == []
+        [revision] = store.list_revisions(card_id)
+        assert revision["artifacts"] == ["1.parquet"]
+        # Repeating the same text is not a new version.
+        display.show("now text", replace=card_id)
+        assert len(store.list_revisions(card_id)) == 1
+
 
 class TestAgentSession:
     def test_show_records_the_agent_session(self, store, mock_server, monkeypatch):
