@@ -1113,6 +1113,29 @@ class TestCardHistory:
     def test_unknown_card(self, client):
         assert client.get("/api/card/nonexistent/history").status_code == 404
 
+    def test_sessions_hosts_recorded(self, rm_server, study_mgr):
+        from starlette.testclient import TestClient
+
+        from vitrine._types import AgentContext
+        from vitrine.agent_sessions import record_agent_session
+
+        label, store = study_mgr.get_or_create_study("sepsis")
+        card = render(
+            "x",
+            study=label,
+            store=store,
+            agent=AgentContext(host="lincei", session_id="thr_1", recorded_at="t"),
+        )
+        study_mgr.register_card(card.card_id, study_mgr.get_dir_for_label(label))
+        record_agent_session(
+            study_mgr.display_dir,
+            {"host": "lincei", "session_id": "thr_1", "title": "Sepsis cohort"},
+        )
+        body = (
+            TestClient(rm_server._app).get(f"/api/card/{card.card_id}/history").json()
+        )
+        assert body["sessions"]["lincei/thr_1"]["title"] == "Sepsis cohort"
+
     def test_card_in_a_study(self, rm_server, study_mgr):
         from starlette.testclient import TestClient
 

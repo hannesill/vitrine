@@ -124,6 +124,8 @@ async def api_card_history(server: DisplayServer, request: Request) -> JSONRespo
 
     ``code`` maps each version's script SHA-256 to the copy the study kept;
     versions whose code has no copy (stdin, ``python -c``) are left out.
+    ``sessions`` maps ``host/session_id`` to what the host recorded about
+    each version's agent session (title, turns with models, a link back).
     """
     raw = request.path_params["card_id"]
     card, store = _find_card(server, raw)
@@ -140,8 +142,19 @@ async def api_card_history(server: DisplayServer, request: Request) -> JSONRespo
             source = store.read_code(sha256)
             if source is not None:
                 code[sha256] = source
+    from vitrine.agent_sessions import session_details
+
+    data_dir = server.study_manager.display_dir if server.study_manager else None
+    contexts = [_serialize_card(card)["agent"]] + [
+        r.get("card", {}).get("agent") for r in revisions
+    ]
     return JSONResponse(
-        {"card": _serialize_card(card), "revisions": revisions, "code": code}
+        {
+            "card": _serialize_card(card),
+            "revisions": revisions,
+            "code": code,
+            "sessions": session_details(data_dir, contexts),
+        }
     )
 
 

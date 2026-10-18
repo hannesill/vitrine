@@ -111,7 +111,7 @@ function loadCardPage(cardId, quiet) {
   state.cardPage.request = token;
   if (!quiet) {
     pageEl.innerHTML = '';
-    pageEl.appendChild(cpEl('div', 'card-page-loading', 'Loading card…'));
+    pageEl.appendChild(cpEl('div', 'card-page-loading', 'Loading card\u2026'));
   }
   fetch('/api/card/' + encodeURIComponent(cardId) + '/history')
     .then(function(resp) {
@@ -143,7 +143,7 @@ function loadCardPage(cardId, quiet) {
 // ----------------------------------------------------------------
 function renderCardPage(pageEl, data) {
   var card = data.card;
-  var code = data.code || {};
+  var lookup = { code: data.code || {}, sessions: data.sessions || {} };
   var versions = buildCardVersions(card, data.revisions || []);
   var current = versions[versions.length - 1];
 
@@ -162,7 +162,7 @@ function renderCardPage(pageEl, data) {
   } else {
     var none = cpEl('p', 'card-page-muted');
     none.appendChild(document.createTextNode('No reason recorded. An agent gives one with '));
-    none.appendChild(cpEl('code', null, 'show(..., why="…")'));
+    none.appendChild(cpEl('code', null, 'show(..., why="\u2026")'));
     none.appendChild(document.createTextNode('.'));
     why.appendChild(none);
   }
@@ -170,16 +170,16 @@ function renderCardPage(pageEl, data) {
 
   // Current version
   var cur = cpSection(versions.length > 1 ? 'Current version' : 'Content',
-    versions.length > 1 ? 'Version ' + current.number + ' · ' + cpTime(current.createdAt) : null);
+    versions.length > 1 ? 'Version ' + current.number + ' \u00b7 ' + cpTime(current.createdAt) : null);
   var content = cpEl('div', 'card-page-content');
   renderVersionContent(content, card);
   cur.appendChild(content);
-  cur.appendChild(buildVersionFacts(current, code));
+  cur.appendChild(buildVersionFacts(current, lookup));
   pageEl.appendChild(cur);
 
   // History
   if (versions.length > 1) {
-    pageEl.appendChild(buildHistorySection(versions, code));
+    pageEl.appendChild(buildHistorySection(versions, lookup));
   }
 
   // Researcher
@@ -193,7 +193,7 @@ function renderCardPage(pageEl, data) {
 
 function buildCardPageBar(card) {
   var bar = cpEl('div', 'card-page-bar');
-  var back = cpEl('button', 'btn card-page-back', '← Back to ' + (state.activeStudyFilter ? 'study' : 'cards'));
+  var back = cpEl('button', 'btn card-page-back', '\u2190 Back to ' + (state.activeStudyFilter ? 'study' : 'cards'));
   back.onclick = closeCardPage;
   bar.appendChild(back);
 
@@ -233,7 +233,7 @@ function buildCardPageHead(card, versions) {
   if (versions.length > 1) meta.push(versions.length + ' versions');
   if (card.deleted) meta.push('Deleted');
   else if (card.dismissed) meta.push('Hidden');
-  text.appendChild(cpEl('div', 'card-page-meta', meta.join(' · ')));
+  text.appendChild(cpEl('div', 'card-page-meta', meta.join(' \u00b7 ')));
   head.appendChild(text);
   return head;
 }
@@ -268,14 +268,19 @@ function buildCardVersions(card, revisions) {
 // ----------------------------------------------------------------
 // A version: who made it and with which code
 // ----------------------------------------------------------------
-function buildVersionFacts(version, code) {
+function buildVersionFacts(version, lookup) {
   var wrap = cpEl('div', 'card-page-facts-wrap');
   var dl = cpEl('dl', 'card-page-facts');
   var agent = version.card.agent;
+  var session = sessionFor(agent, lookup.sessions);
 
   if (agent) {
     var host = HOST_NAMES[agent.host] || agent.host;
     var sessionDd = cpEl('dd');
+    if (session && session.record.title) {
+      sessionDd.appendChild(cpEl('span', 'card-page-session-title', session.record.title));
+      sessionDd.appendChild(document.createElement('br'));
+    }
     if (agent.session_id) {
       sessionDd.appendChild(document.createTextNode(host + ' '));
       var sid = cpEl('code', 'card-page-session', cpShortId(agent.session_id));
@@ -289,10 +294,27 @@ function buildVersionFacts(version, code) {
           cpCopy('claude --resume ' + agent.session_id, 'Resume command copied');
         }));
       }
+      var link = session && cpSafeUrl(session.record.open_url);
+      if (link) {
+        var open = cpEl('a', 'card-page-small-btn card-page-open-link', 'Open in ' + host);
+        open.href = link;
+        if (/^https?:/i.test(link)) {
+          open.target = '_blank';
+          open.rel = 'noopener noreferrer';
+        }
+        sessionDd.appendChild(open);
+      }
     } else {
       sessionDd.textContent = host + ', session not known';
     }
     cpFact(dl, 'Session', sessionDd);
+    if (session && session.turn && session.turn.model) {
+      var modelDd = cpEl('dd', 'card-page-model', session.turn.model);
+      if (session.turn.provider) {
+        modelDd.appendChild(cpEl('span', 'card-page-muted', ' \u00b7 ' + session.turn.provider));
+      }
+      cpFact(dl, 'Model', modelDd);
+    }
     if (agent.turn_id) cpFact(dl, 'Turn', cpEl('dd', null, agent.turn_id));
   } else {
     cpFact(dl, 'Session', cpEl('dd', 'card-page-muted',
@@ -300,8 +322,29 @@ function buildVersionFacts(version, code) {
   }
   cpFact(dl, 'Made', cpEl('dd', null, cpTime(version.createdAt)));
   wrap.appendChild(dl);
-  wrap.appendChild(buildCodeBlock(version.card.code, code));
+  wrap.appendChild(buildCodeBlock(version.card.code, lookup.code));
   return wrap;
+}
+
+// What the host recorded about a version's agent session, and the turn that
+// made the version: the one the card names, else the last that started
+// before the card was recorded.
+function sessionFor(agent, sessions) {
+  if (!agent || !agent.session_id) return null;
+  var record = sessions[agent.host + '/' + agent.session_id];
+  if (!record) return null;
+  var turns = record.turns || [];
+  var turn = null;
+  if (agent.turn_id) {
+    turn = turns.filter(function(t) { return t.turn_id === agent.turn_id; })[0] || null;
+  }
+  if (!turn && agent.recorded_at) {
+    var at = new Date(agent.recorded_at).getTime();
+    turns.forEach(function(t) {
+      if (new Date(t.started_at).getTime() <= at) turn = t;
+    });
+  }
+  return { record: record, turn: turn };
 }
 
 function buildCodeBlock(origin, code) {
@@ -364,14 +407,15 @@ function buildCodeViewer(source, line) {
 // ----------------------------------------------------------------
 // History
 // ----------------------------------------------------------------
-function buildHistorySection(versions, code) {
+function buildHistorySection(versions, lookup) {
   var section = cpSection('History', versions.length + ' versions, newest first');
   var list = cpEl('ol', 'card-page-history');
 
   for (var i = versions.length - 1; i >= 0; i--) {
     var v = versions[i];
     var item = cpEl('li', 'card-page-version' + (v.current ? ' current' : ''));
-    var changes = i === 0 ? ['First version'] : describeChange(versions[i - 1].card, v.card);
+    var changes = i === 0 ? ['First version']
+      : describeChange(versions[i - 1].card, v.card, lookup.sessions);
 
     var summaryParent;
     if (v.current) {
@@ -387,7 +431,7 @@ function buildHistorySection(versions, code) {
     line.appendChild(cpEl('span', 'card-page-version-number', 'Version ' + v.number));
     if (v.current) line.appendChild(cpEl('span', 'card-page-badge', 'Current'));
     line.appendChild(cpEl('span', 'card-page-version-time', cpTime(v.createdAt)));
-    var who = versionWho(v.card);
+    var who = versionWho(v.card, lookup.sessions);
     if (who) line.appendChild(cpEl('span', 'card-page-version-who', who));
     summaryParent.appendChild(line);
 
@@ -395,7 +439,7 @@ function buildHistorySection(versions, code) {
     changes.forEach(function(c) { changeList.appendChild(cpEl('li', null, c)); });
     summaryParent.appendChild(changeList);
 
-    if (!v.current) fillVersionOnOpen(details, v, code);
+    if (!v.current) fillVersionOnOpen(details, v, lookup);
     list.appendChild(item);
   }
   section.appendChild(list);
@@ -403,30 +447,38 @@ function buildHistorySection(versions, code) {
 }
 
 // An earlier version's content and code are built when it is first opened.
-function fillVersionOnOpen(details, version, code) {
+function fillVersionOnOpen(details, version, lookup) {
   details.addEventListener('toggle', function() {
     if (!details.open || details.querySelector('.card-page-version-body')) return;
     var body = cpEl('div', 'card-page-version-body');
     var content = cpEl('div', 'card-page-content');
     body.appendChild(content);
-    body.appendChild(buildVersionFacts(version, code));
+    body.appendChild(buildVersionFacts(version, lookup));
     details.appendChild(body);
     renderVersionContent(content, version.card);
   });
 }
 
-function versionWho(card) {
+function versionWho(card, sessions) {
   var parts = [];
-  if (card.agent) {
-    var host = HOST_NAMES[card.agent.host] || card.agent.host;
-    parts.push(card.agent.session_id ? host + ' ' + cpShortId(card.agent.session_id) : host);
-  }
+  if (card.agent) parts.push(sessionLabel(card.agent, sessions));
+  var session = sessionFor(card.agent, sessions);
+  if (session && session.turn && session.turn.model) parts.push(session.turn.model);
   if (card.code) parts.push(card.code.path + (card.code.line ? ':' + card.code.line : ''));
-  return parts.join(' · ');
+  return parts.join(' \u00b7 ');
+}
+
+// "Lactate study (Lincei)" when the host recorded a title, else "Lincei thr_1".
+function sessionLabel(agent, sessions) {
+  var host = HOST_NAMES[agent.host] || agent.host;
+  var session = sessionFor(agent, sessions);
+  if (session && session.record.title) return session.record.title + ' (' + host + ')';
+  return agent.session_id ? host + ' ' + cpShortId(agent.session_id) : host;
 }
 
 // What changed from one version to the next, as short phrases.
-function describeChange(a, b) {
+function describeChange(a, b, sessions) {
+  sessions = sessions || {};
   var changes = [];
   var pa = a.preview || {};
   var pb = b.preview || {};
@@ -435,13 +487,13 @@ function describeChange(a, b) {
     changes.push((TYPE_NAMES[a.card_type] || a.card_type) + ' became ' + (TYPE_NAMES[b.card_type] || b.card_type).toLowerCase());
   }
   if ((a.title || '') !== (b.title || '')) {
-    changes.push('Title “' + (a.title || '') + '” → “' + (b.title || '') + '”');
+    changes.push('Title \u201c' + (a.title || '') + '\u201d \u2192 \u201c' + (b.title || '') + '\u201d');
   }
   if (a.card_type === b.card_type) {
     if (b.card_type === 'table') {
       var sa = pa.shape || [];
       var sb = pb.shape || [];
-      if (sa[0] !== sb[0]) changes.push('Rows ' + cpNum(sa[0]) + ' → ' + cpNum(sb[0]));
+      if (sa[0] !== sb[0]) changes.push('Rows ' + cpNum(sa[0]) + ' \u2192 ' + cpNum(sb[0]));
       var ca = pa.columns || [];
       var cb = pb.columns || [];
       var added = cb.filter(function(c) { return ca.indexOf(c) === -1; });
@@ -460,7 +512,7 @@ function describeChange(a, b) {
       changed.slice(0, 4).forEach(function(k) {
         if (!(k in ib)) changes.push(k + ' removed');
         else if (!(k in ia)) changes.push(k + ' added: ' + ib[k]);
-        else changes.push(k + ' ' + ia[k] + ' → ' + ib[k]);
+        else changes.push(k + ' ' + ia[k] + ' \u2192 ' + ib[k]);
       });
       if (changed.length > 4) changes.push((changed.length - 4) + ' more values changed');
     } else if (b.card_type === 'markdown') {
@@ -474,11 +526,23 @@ function describeChange(a, b) {
   var codeA = a.code || {};
   var codeB = b.code || {};
   if (b.code && codeA.path !== codeB.path) {
-    changes.push('Made by ' + codeB.path);
+    changes.push('Script ' + codeB.path);
   } else if (codeA.sha256 && codeB.sha256 && codeA.sha256 !== codeB.sha256) {
     changes.push('Script edited');
   }
   if (b.why && a.why !== b.why) changes.push('New reason');
+
+  var agentA = a.agent || {};
+  var agentB = b.agent || {};
+  if (b.agent && (agentA.host !== agentB.host || agentA.session_id !== agentB.session_id)) {
+    changes.push('Session ' + sessionLabel(b.agent, sessions));
+  } else {
+    var modelA = sessionFor(a.agent, sessions);
+    var modelB = sessionFor(b.agent, sessions);
+    modelA = modelA && modelA.turn && modelA.turn.model;
+    modelB = modelB && modelB.turn && modelB.turn.model;
+    if (modelA && modelB && modelA !== modelB) changes.push('Model ' + modelA + ' \u2192 ' + modelB);
+  }
   return changes.length ? changes : ['No visible change'];
 }
 
@@ -519,7 +583,7 @@ function renderTablePreview(container, preview) {
   var rows = (preview.preview_rows || []).slice(0, CARD_PAGE_PREVIEW_ROWS);
   var shape = preview.shape || [rows.length, columns.length];
 
-  var caption = cpNum(shape[0]) + ' rows × ' + cpNum(shape[1]) + ' columns';
+  var caption = cpNum(shape[0]) + ' rows \u00d7 ' + cpNum(shape[1]) + ' columns';
   if (shape[0] > rows.length) caption += ', first ' + rows.length + ' shown';
   container.appendChild(cpEl('div', 'card-page-table-caption', caption));
 
@@ -697,6 +761,14 @@ function cpTime(iso) {
 // Long IDs (UUIDs) read better shortened; the full ID is in the tooltip and copy button.
 function cpShortId(id) {
   return id.length > 20 ? id.slice(0, 8) + '\u2026' : id;
+}
+
+// Host links open the session in the host; never let one run script.
+function cpSafeUrl(url) {
+  if (typeof url !== 'string') return null;
+  var m = /^([a-z][a-z0-9+.-]*):/i.exec(url.trim());
+  if (!m || /^(javascript|data|vbscript|file|blob)$/i.test(m[1])) return null;
+  return url.trim();
 }
 
 function cpNum(n) {

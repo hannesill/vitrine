@@ -53,6 +53,7 @@ __all__ = [
     "list_studies",
     "on_event",
     "progress",
+    "record_agent_session",
     "register_output_dir",
     "register_session",
     "section",
@@ -199,7 +200,7 @@ def show(
         why: Why the card exists: the question it answers or the decision
             it informs. A replace without one keeps the card's earlier why.
         replace: Card ID to update instead of appending. The card's
-            previous version is kept as a revision.
+            previous version is kept as a revision, unless nothing changed.
         position: "top" to prepend instead of append.
         wait: If True, block until user responds in the browser.
         prompt: Question shown to the user (requires wait=True).
@@ -263,7 +264,12 @@ def show(
             why=why,
         )
         _keep_calling_code(replace_store, caller)
-        if _keep_revision:
+        old = replace_store.get_card(replace)
+        changed = old is None or (
+            not replace_store.same_content(replace, card.card_id)
+            or (why is not None and why != old.why)
+        )
+        if changed and old is not None and _keep_revision:
             replace_store.keep_revision(replace)
         # The original card takes everything render() produced, and keeps its
         # id: its artifact moves under that id too, because the server finds
@@ -280,8 +286,8 @@ def show(
                     "preview",
                     "artifact_type",
                     "provenance",
-                    "agent",
-                    "code",
+                    # A re-run that changes nothing keeps who made the card.
+                    *(("agent", "code") if changed else ()),
                     *(("why",) if why is not None else ()),
                 )
             },
@@ -393,6 +399,53 @@ def show(
         fields=card.preview.get("fields") or card.preview.get("controls"),
         _store=store,
     )
+
+
+def record_agent_session(
+    host: str,
+    session_id: str,
+    *,
+    title: str | None = None,
+    open_url: str | None = None,
+    turns: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Record what a host knows about an agent session (ADR-0002).
+
+    Cards store only their session's host and IDs; the card page shows the
+    title, the model behind each turn and a link back into the session from
+    this record. Call it again whenever the title changes or a turn starts.
+    No server needs to be running.
+
+    Args:
+        host: The program running the agent, as in ``VITRINE_AGENT_HOST``.
+        session_id: The host's session ID, as in ``VITRINE_AGENT_SESSION_ID``.
+        title: The session's current title.
+        open_url: A link that opens the session in the host.
+        turns: Turns to add or update, each with ``started_at`` (ISO time)
+            and optionally ``turn_id``, ``provider`` and ``model``.
+
+    Returns:
+        The stored record.
+
+    Raises:
+        ValueError: when a value is malformed, e.g. an ``open_url`` with a
+            ``javascript:`` scheme.
+    """
+    from vitrine._utils import get_vitrine_dir
+    from vitrine.agent_sessions import record_agent_session as _record
+
+    record: dict[str, Any] = {"host": host, "session_id": session_id}
+    if title is not None:
+        record["title"] = title
+    if open_url is not None:
+        record["open_url"] = open_url
+    if turns is not None:
+        record["turns"] = turns
+    if _st._study_manager is not None:
+        data_dir = _st._study_manager.display_dir
+    else:
+        data_dir = get_vitrine_dir()
+    return _record(data_dir, record)
 
 
 def section(title: str, study: str | None = None) -> None:
