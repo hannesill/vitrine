@@ -135,11 +135,19 @@ def _validated_turn(turn: Any) -> dict[str, Any]:
 
 
 def _merge_turns(stored: list[dict], incoming: list[dict]) -> list[dict]:
-    by_key = {t.get("turn_id") or t["started_at"]: t for t in stored}
+    by_key = {_turn_key(t): t for t in stored}
     for turn in incoming:
-        key = turn.get("turn_id") or turn["started_at"]
+        key = _turn_key(turn)
         by_key[key] = {**by_key.get(key, {}), **turn}
     return sorted(by_key.values(), key=lambda t: _instant(t["started_at"]))
+
+
+def _turn_key(turn: Mapping[str, Any]) -> tuple[str, str]:
+    # Kept apart so a turn ID that looks like a timestamp never matches a
+    # turn that has no ID and started at that time.
+    if turn.get("turn_id"):
+        return ("id", turn["turn_id"])
+    return ("time", turn["started_at"])
 
 
 def _instant(iso: str) -> datetime:

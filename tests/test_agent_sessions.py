@@ -97,6 +97,24 @@ class TestRecordAgentSession:
         )
         assert record["turns"][0]["model"] == "claude-opus-5-5"
 
+    def test_a_turn_id_that_looks_like_a_timestamp_is_its_own_turn(self, tmp_path):
+        record = record_agent_session(
+            tmp_path,
+            {
+                "host": "lincei",
+                "session_id": "s",
+                "turns": [
+                    {"started_at": "2026-10-18T10:00:00Z", "model": "a"},
+                    {
+                        "turn_id": "2026-10-18T10:00:00Z",
+                        "started_at": "2026-10-18T10:05:00Z",
+                        "model": "b",
+                    },
+                ],
+            },
+        )
+        assert [t["model"] for t in record["turns"]] == ["a", "b"]
+
     def test_unknown_fields_are_ignored(self, tmp_path):
         record = record_agent_session(
             tmp_path, {"host": "lincei", "session_id": "thr_1", "colour": "blue"}
