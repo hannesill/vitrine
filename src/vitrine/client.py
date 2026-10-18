@@ -478,13 +478,21 @@ def _attach_existing_server() -> None:
     but fall back to on-disk state otherwise. No-op if already connected.
     Joins as owner like ``_ensure_started`` does, since a later ``show()``
     takes its fast path on this connection and never joins itself.
+    Untrusted server metadata leaves the module disconnected instead of
+    raising; ``show()`` still fails closed on it.
     """
+    from vitrine._utils import ServerMetadataError
+
     with _st._lock:
         if _st._remote_url is not None:
             return
         if _st._server is not None and _st._server.is_running:
             return
-        info = _discover_server()
+        try:
+            info = _discover_server()
+        except ServerMetadataError as exc:
+            logger.warning(f"Not attaching to the display server: {exc}")
+            return
         if info and _join_as_owner(info):
             _st._remote_url = info.get("api_url", info["url"])
             _st._auth_token = info.get("token")

@@ -432,8 +432,8 @@ def ask(
         if no server could be reached.
     """
     r = show(question, wait=True, actions=options, study=study, timeout=timeout)
-    if r.action == DisplayResponse.ERROR:
-        # message holds the error reason here, not text the researcher typed
+    if r.action == DisplayResponse.ERROR and DisplayResponse.ERROR not in options:
+        # A failure, not a button: message is its reason, not typed text
         return r.action
     typed = (r.message or "").strip()
     return typed or r.action
@@ -690,8 +690,9 @@ def study_context(study: str) -> dict[str, Any]:
         if url:
             try:
                 import urllib.request
+                from urllib.parse import quote
 
-                ctx_url = f"{url}/api/studies/{study}/context"
+                ctx_url = f"{url}/api/studies/{quote(study, safe='')}/context"
                 req = urllib.request.Request(ctx_url, method="GET")
                 with urllib.request.urlopen(req, timeout=5) as resp:
                     return json.loads(resp.read())

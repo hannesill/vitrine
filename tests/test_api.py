@@ -1204,6 +1204,45 @@ class TestStudyContext:
         assert ctx["card_count"] == 0
         assert _st._remote_url is None
 
+    @pytest.mark.parametrize("error", ["ServerMetadataError", "ServerRestartRequired"])
+    def test_study_context_falls_back_to_disk_on_untrusted_metadata(
+        self, study_manager, monkeypatch, error
+    ):
+        """Metadata discovery refuses to trust stays a read-only disk lookup."""
+        import vitrine._utils as _utils
+
+        def untrusted():
+            raise getattr(_utils, error)("metadata predates this version")
+
+        monkeypatch.setattr(_client_mod, "_discover_server", untrusted)
+
+        ctx = display.study_context("s")
+
+        assert ctx["card_count"] == 0
+        assert _st._remote_url is None
+
+    def test_study_context_encodes_the_study_label(
+        self, study_manager, monkeypatch, tmp_path
+    ):
+        """URL metacharacters in a label must not truncate the request path."""
+        import urllib.request
+
+        info = _server_metadata(tmp_path / ".server.json")
+        monkeypatch.setattr(_client_mod, "_discover_server", lambda: info)
+        seen = []
+
+        def fake_urlopen(req, timeout=None):
+            seen.append(req.full_url)
+            raise OSError("no network in tests")
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+        display.study_context("sepsis #2? 50%/v1")
+
+        assert seen == [
+            f"{info['api_url']}/api/studies/sepsis%20%232%3F%2050%25%2Fv1/context"
+        ]
+
     def test_study_context_does_not_start_server(self, study_manager, monkeypatch):
         """study_context() never spawns a server just to read context."""
         monkeypatch.setattr(_client_mod, "_discover_server", lambda: None)
@@ -1779,6 +1818,16 @@ class TestAskTimeout:
         }
         result = display.ask("Which score?", ["SOFA", "APACHE III"])
         assert result == "error"
+
+    def test_ask_keeps_typed_text_for_an_error_option(self, store, mock_server):
+        """A button the caller named "error" is a choice, not a failure."""
+        mock_server._mock_response = {
+            "action": "error",
+            "card_id": "test",
+            "message": "off by one in the join",
+        }
+        result = display.ask("What went wrong?", ["error", "fine"])
+        assert result == "off by one in the join"
 
 
 # ================================================================
