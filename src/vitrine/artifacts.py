@@ -31,10 +31,15 @@ import tempfile
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import duckdb
-import pandas as pd
+
+if TYPE_CHECKING:
+    # Imported where a card needs it: the server imports this module at start,
+    # and pandas' first import in a fresh environment can take longer than the
+    # start command waits.
+    import pandas as pd
 
 from vitrine._types import (
     AgentContext,
@@ -857,6 +862,8 @@ class ArtifactStore:
         Returns:
             Path to the stored Parquet file.
         """
+        import pandas as pd
+
         df = pd.DataFrame(rows, columns=columns)
         return self.store_dataframe(selection_id, df)
 
