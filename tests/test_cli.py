@@ -253,13 +253,31 @@ class TestStopCommand:
 
 
 class TestStartCommand:
+    def test_server_module_loads_without_pandas(self):
+        # pandas' first import in a fresh environment can take most of the
+        # start budget, so the server leaves it to the cards that need it.
+        import subprocess
+        import sys
+
+        probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import sys, vitrine.server; print('pandas' in sys.modules)",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert probe.stdout.strip() == "False"
+
     def test_startup_timing_budget_includes_status_poll_and_cleanup(self):
-        assert STARTUP_READY_TIMEOUT_SECONDS == 20.0
+        assert STARTUP_READY_TIMEOUT_SECONDS == 45.0
         assert STARTUP_POLL_INTERVAL_SECONDS == 0.2
         assert STARTUP_STATUS_CHECK_TIMEOUT_SECONDS == 2.0
         assert STARTUP_REAP_TIMEOUT_SECONDS == 3.0
         assert STARTUP_CLEANUP_BUDGET_SECONDS == 6.0
-        assert STARTUP_COMMAND_BUDGET_SECONDS == 28.2
+        assert STARTUP_COMMAND_BUDGET_SECONDS == 53.2
 
     def test_start_already_running(self):
         info = {"pid": 12345, "port": 7741, "url": "http://127.0.0.1:7741"}
@@ -385,7 +403,7 @@ class TestStartCommand:
 
         assert result.exit_code == 1
         assert "didn't become healthy" in result.output.lower()
-        assert "within 20s" in result.output
+        assert "within 45s" in result.output
 
     def test_start_timeout_terminates_and_reaps_exact_spawned_child(self):
         events = []
