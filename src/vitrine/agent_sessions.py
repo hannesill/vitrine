@@ -121,7 +121,9 @@ def _validated_turn(turn: Any) -> dict[str, Any]:
     out = {"started_at": started_at}
     for name in ("turn_id", "provider", "model"):
         value = turn.get(name)
-        if value is not None and not isinstance(value, str):
+        if value is None:
+            continue  # left out: a turn recorded again keeps its stored value
+        if not isinstance(value, str):
             raise ValueError(f"turn {name} must be a string")
         out[name] = value
     return out

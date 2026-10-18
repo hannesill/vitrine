@@ -35,6 +35,12 @@ def test_claude_code_session(monkeypatch):
     )
 
 
+def test_older_claude_session_variable(monkeypatch):
+    monkeypatch.setenv("CLAUDE_SESSION_ID", "claude-old")
+    agent = current_agent_context()
+    assert (agent.host, agent.session_id) == ("claude-code", "claude-old")
+
+
 def test_empty_host_falls_through(monkeypatch):
     monkeypatch.setenv("VITRINE_AGENT_HOST", "")
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "claude-1")

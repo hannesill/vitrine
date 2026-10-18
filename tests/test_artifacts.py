@@ -278,6 +278,16 @@ class TestCodeAndWhy:
     def test_read_unknown_code(self, store):
         assert store.read_code("ab12") is None
 
+    @pytest.mark.parametrize("bad", ["../../secrets", "/etc/passwd", "*", "a b", ""])
+    def test_code_hashes_must_be_hex(self, store, bad):
+        assert store.read_code(bad) is None
+        with pytest.raises(ValueError):
+            store.keep_code(bad, b"x", ".py")
+
+    def test_reads_scripts_as_utf8(self, store):
+        store.keep_code("ab12", "dose = 5  # µg/kg/min → ±\n".encode(), ".py")
+        assert store.read_code("ab12") == "dose = 5  # µg/kg/min → ±\n"
+
 
 class TestRevisions:
     def test_keeps_the_card_and_its_artifact(self, store, sample_card, sample_df):
