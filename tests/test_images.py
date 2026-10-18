@@ -365,3 +365,92 @@ class TestMarkdownImages:
                 n.startswith(f"artifacts/{card.card_id}.image-0-")
                 for n in zf.namelist()
             )
+
+
+class TestReviewFixes:
+    def test_a_channels_first_array_is_a_picture(self, store):
+        card = render(np.zeros((3, 40, 30), dtype=np.uint8), store=store)
+        assert card.card_type == CardType.IMAGE
+        [entry] = card.preview["images"]
+        assert (entry["width"], entry["height"]) == (30, 40)
+
+    def test_exif_orientation_turns_the_picture_upright(self, store, tmp_path):
+        exif = Image.Exif()
+        exif[0x0112] = 6  # stored sideways: shown turned 90 degrees
+        path = tmp_path / "phone.jpg"
+        Image.fromarray(_xray(20, 40)).save(path, exif=exif.tobytes())
+        card = render(path, store=store)
+        [entry] = card.preview["images"]
+        assert (entry["width"], entry["height"]) == (20, 40)
+        [files] = _files(store, card)
+        with Image.open(files["thumb"]) as thumb:
+            assert thumb.size == (20, 40)
+        # The original keeps its bytes, orientation tag included.
+        assert files["file"].read_bytes() == path.read_bytes()
+
+    def test_a_percentage_svg_size_falls_back_to_the_viewbox(self, store, tmp_path):
+        path = tmp_path / "flow.svg"
+        path.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" viewBox="0 0 640 480"></svg>'
+        )
+        [entry] = render(path, store=store).preview["images"]
+        assert (entry["width"], entry["height"]) == (640, 480)
+
+    def test_an_angle_bracket_markdown_path_may_hold_spaces(self, store, tmp_path):
+        png = tmp_path / "my plot.png"
+        Image.fromarray(_xray()).save(png)
+        card = render(f"![plot](<{png}>)", store=store)
+        assert card.preview["text"].startswith("![plot](<vitrine-image:image-0-")
+        assert len(list(store._artifacts_dir.glob(f"{card.card_id}.*"))) == 1
+
+    def test_a_mask_name_has_one_colour_across_a_gallery(self, store):
+        lung = np.ones((20, 20), dtype=bool)
+        heart = np.zeros((20, 20), dtype=bool)
+        card = render(
+            [
+                Picture(_xray(20, 20), overlay={"Lung": lung, "Heart": heart}),
+                Picture(_xray(20, 20), overlay={"Heart": heart, "Lung": lung}),
+            ],
+            store=store,
+        )
+        first, second = (dict(e["legend"]) for e in card.preview["images"])
+        assert first == second
+        assert first["Lung"] != first["Heart"]
+
+
+class TestExportAnswers:
+    def test_html_export_shows_the_legend_and_the_picked_pictures(self, tmp_path):
+        manager = StudyManager(tmp_path / "display")
+        _, store = manager.get_or_create_study("review")
+        mask = np.ones((10, 10), dtype=bool)
+        card = render(
+            [
+                Picture(_xray(), caption="case 1", overlay={"Lung": mask}),
+                Picture(_xray(), caption="case 2", overlay={"Lung": mask}),
+            ],
+            store=store,
+            study="review",
+        )
+        store.store_card(card)
+        manager.register_card(card.card_id, manager._label_to_dir["review"])
+        store.update_card(
+            card.card_id,
+            preview={
+                **card.preview,
+                "controls": [
+                    {
+                        "type": "question",
+                        "name": "wrong",
+                        "question": "Which are wrong?",
+                        "options": [{"label": "case 1"}, {"label": "case 2"}],
+                        "multiple": True,
+                    }
+                ],
+            },
+            response_action="confirm",
+            response_values={"wrong": ["case 2"]},
+        )
+        html = export_html_string(manager, study="review")
+        assert 'class="picture-legend"' in html and ">Lung</span>" in html
+        assert html.count('class="picture picked"') == 1
+        assert "Which are wrong?" in html and "case 2" in html

@@ -156,17 +156,22 @@ function renderPictures(container, cardData) {
 // The question's own inputs stay in the form and carry the answer, so
 // submitting and freezing work as for any other question.
 
+// The question whose options are exactly the gallery's captions, each once:
+// then every tile is one option, and every option one tile.
 function _pictureQuestion(cardData) {
-  var captions = {};
+  var captions = [];
   ((cardData.preview && cardData.preview.images) || []).forEach(function(entry) {
-    if (entry.caption) captions[entry.caption] = true;
+    if (entry.caption) captions.push(entry.caption);
   });
+  var unique = captions.slice().sort();
+  for (var c = 1; c < unique.length; c++) {
+    if (unique[c] === unique[c - 1]) return null;
+  }
   var controls = (cardData.preview && cardData.preview.controls) || [];
   for (var i = 0; i < controls.length; i++) {
-    var options = controls[i].options || [];
-    if (controls[i].type === 'question' && options.length && options.every(function(opt) {
-      return captions[opt.label];
-    })) {
+    var labels = (controls[i].options || []).map(function(opt) { return opt.label; }).sort();
+    if (controls[i].type === 'question' && labels.length === unique.length &&
+        labels.every(function(label, k) { return label === unique[k]; })) {
       return controls[i];
     }
   }
@@ -183,20 +188,26 @@ function _fieldPicks(fieldEl) {
   return picks;
 }
 
+// Whether `label` is one of the question's options, which it then picks or unpicks.
 function _toggleFieldPick(fieldEl, label) {
   var select = fieldEl.querySelector('select[data-field-input]');
   if (select) {
+    var known = Array.prototype.some.call(select.options, function(option) {
+      return option.value === label;
+    });
+    if (!known) return false;
     select.value = select.value === label ? '' : label;
     select.dispatchEvent(new Event('change', { bubbles: true }));
-    return;
+    return true;
   }
   var input = null;
   fieldEl.querySelectorAll('input[data-field-input]').forEach(function(candidate) {
     if (candidate.value === label) input = candidate;
   });
-  if (!input) return;
+  if (!input) return false;
   input.checked = !input.checked;
   input.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
 }
 
 function _markPicks(root, picks) {
@@ -256,8 +267,8 @@ function linkPictureQuestion(cardEl, cardData) {
         root.classList.remove('pictures-picking');
         return false;
       }
-      _toggleFieldPick(fieldEl, label);
-      return true;
+      // A tile that is no option opens the viewer instead.
+      return _toggleFieldPick(fieldEl, label);
     },
   };
   if (fieldEl._pictureSync) fieldEl.removeEventListener('change', fieldEl._pictureSync);

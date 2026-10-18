@@ -84,6 +84,9 @@ def _looks_like_picture_array(arr: Any) -> bool:
         return min(shape) >= _MIN_ARRAY_SIDE
     if arr.ndim == 3 and shape[2] in (3, 4):
         return min(shape[:2]) >= _MIN_ARRAY_SIDE
+    # Channels first, as torch keeps them (`_to_array_8bit` moves them last).
+    if arr.ndim == 3 and shape[0] in (1, 3, 4) and shape[2] not in (1, 3, 4):
+        return min(shape[1:]) >= _MIN_ARRAY_SIDE
     return False
 
 
@@ -155,15 +158,26 @@ def _open(source: Any) -> tuple[PILImage.Image, bytes | None, str | None]:
         data = path.read_bytes()
         image = Image.open(io.BytesIO(data))
         image.load()
-        return image, data, fmt
+        # Browsers turn a photo upright by its EXIF orientation; the thumbnail,
+        # size and overlay canvas follow the picture as it is seen. The original
+        # keeps its bytes, orientation tag included.
+        return _upright(image), data, fmt
     if _is_pil(source):
-        return source, None, None
+        return _upright(source), None, None
     if _is_ndarray(source):
         return Image.fromarray(_to_array_8bit(source)), None, None
     raise TypeError(
         f"Cannot show {type(source).__name__} as an image: pass a PIL image, a NumPy "
         "array, or the path of an image file."
     )
+
+
+def _upright(image: PILImage.Image) -> PILImage.Image:
+    """``image`` turned as its EXIF orientation says, or itself when it says nothing."""
+    from PIL import ImageOps
+
+    orientation = image.getexif().get(0x0112, 1)
+    return image if orientation in (0, 1) else ImageOps.exif_transpose(image)
 
 
 def _displayable(image: PILImage.Image) -> PILImage.Image:
@@ -242,17 +256,23 @@ def _heatmap_layer(values: Any, size: tuple[int, int]) -> PILImage.Image:
 
 
 def _overlay(
-    overlay: Any, size: tuple[int, int]
+    overlay: Any, size: tuple[int, int], palette: dict[str, str]
 ) -> tuple[PILImage.Image, list[list[str]]]:
-    """The overlay as one RGBA image of ``size``, and its legend."""
+    """The overlay as one RGBA image of ``size``, and its legend.
+
+    Named masks take their colour from ``palette``, shared by a gallery's
+    pictures, so one name has one colour on every picture and in the legend.
+    """
     import numpy as np
     from PIL import Image
 
     if isinstance(overlay, dict):
         canvas = Image.new("RGBA", size, (0, 0, 0, 0))
         legend = []
-        for i, (name, mask) in enumerate(overlay.items()):
-            color = OVERLAY_COLORS[i % len(OVERLAY_COLORS)]
+        for name, mask in overlay.items():
+            color = palette.setdefault(
+                str(name), OVERLAY_COLORS[len(palette) % len(OVERLAY_COLORS)]
+            )
             canvas = Image.alpha_composite(canvas, _mask_layer(mask, size, color))
             legend.append([str(name), color])
         return canvas, legend
@@ -281,7 +301,9 @@ def _label_text(value: Any) -> str:
     return str(value)
 
 
-_SVG_LENGTH_RE = r'\s{attr}\s*=\s*["\']\s*([0-9.]+)'
+# A width or height in pixels (or unitless); a percentage or another unit is
+# relative and leaves the size to the viewBox.
+_SVG_LENGTH_RE = r'\s{attr}\s*=\s*["\']\s*([0-9.]+)\s*(?:px)?\s*["\']'
 _SVG_VIEWBOX_RE = re.compile(
     r'\sviewBox\s*=\s*["\']\s*[-0-9.]+[\s,]+[-0-9.]+[\s,]+([0-9.]+)[\s,]+([0-9.]+)'
 )
@@ -317,6 +339,7 @@ def store_pictures(
 ) -> list[dict[str, Any]]:
     """Write each item's files with ``write(card_id, name, data)``; return their preview entries."""
     entries = []
+    palette: dict[str, str] = {}
     for i, item in enumerate(items):
         picture = item if isinstance(item, Picture) else Picture(image=item)
         if _is_svg_path(picture.image):
@@ -346,7 +369,7 @@ def store_pictures(
             write(card_id, entry["thumb"], thumb)
 
         if picture.overlay is not None:
-            layer, legend = _overlay(picture.overlay, size)
+            layer, legend = _overlay(picture.overlay, size, palette)
             overlay_png = _png(layer)
             entry["overlay"] = f"overlay-{i}-{_short_hash(overlay_png)}.png"
             write(card_id, entry["overlay"], overlay_png)
@@ -368,7 +391,9 @@ def store_pictures(
 
 
 # Local images a markdown card embeds: ![alt](path "title") and <img src="path">.
-_MD_IMAGE_RE = re.compile(r'(!\[[^\]]*\]\(\s*<?)([^)\s>]+)(>?(?:\s+"[^"]*")?\s*\))')
+_MD_IMAGE_RE = re.compile(
+    r'(!\[[^\]]*\]\(\s*)(?:<([^>\n]+)>|([^)\s]+))((?:\s+"[^"]*")?\s*\))'
+)
 _HTML_IMAGE_RE = re.compile(
     r'(<img\b[^>]*?\bsrc\s*=\s*["\'])([^"\']+)(["\'])', re.IGNORECASE
 )
@@ -403,7 +428,15 @@ def store_markdown_images(text: str, card_id: str, write: Any) -> tuple[str, lis
             names[key] = name
         return MARKDOWN_IMAGE_SCHEME + names[key]
 
-    text = _MD_IMAGE_RE.sub(lambda m: m.group(1) + keep(m.group(2)) + m.group(3), text)
+    # `<path with spaces>` is markdown's way to write a destination with spaces.
+    text = _MD_IMAGE_RE.sub(
+        lambda m: (
+            m.group(1)
+            + (f"<{keep(m.group(2))}>" if m.group(2) is not None else keep(m.group(3)))
+            + m.group(4)
+        ),
+        text,
+    )
     text = _HTML_IMAGE_RE.sub(
         lambda m: m.group(1) + keep(m.group(2)) + m.group(3), text
     )
